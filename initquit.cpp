@@ -20,7 +20,7 @@ extern const GUID guid_preferences_page;
 
 DECLARE_COMPONENT_VERSION(
     "\xE8\x92\x99\xE5\x8F\xA4\xE6\x96\x87\xE6\xAD\x8C\xE8\xAF\x8D",
-    "1.0.0",
+    "1.0.1",
     "Author: lsfacg\n"
     "A Desktop Lyric plugin for Traditional Mongolian.\n"
     "Special thanks to the Wucai Hulunbuir Children's Choir.\n"
