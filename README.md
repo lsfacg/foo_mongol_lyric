@@ -26,4 +26,4 @@ foobar2000 Traditional Mongolian Vertical Lyrics Plugin<br>
 
 安装方法：<br>
 1.打开 foobar2000 “首选项”，单击“组件”，将 foo_mongol_lyric.fb2k-component 拖拽进窗口即可<br>
-2.直接双击 foo_mongol_lyric_1.0.1.fb2k-component
+2.直接双击 foo_mongol_lyric.fb2k-component
