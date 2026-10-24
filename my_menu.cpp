@@ -11,7 +11,14 @@ extern bool g_isTopmost;
 extern HWND g_hwndLyrics;
 extern int g_displayMode;
 extern const GUID guid_preferences_page;
+extern const GUID guid_pref_desktop;
+extern const GUID guid_pref_panel;
 extern void FetchLyricsNow(metadb_handle_ptr item);
+extern int g_reload_flag;
+
+// 新增：引用面板歌词的相关变量和函数
+extern int g_panelDisplayMode;
+extern void SavePanelSettings();
 
 static const GUID guid_menu_group = { 0x77777777, 0x7777, 0x7777,{ 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77 } };
 static const GUID guid_menu_display = { 0x88888888, 0x8888, 0x8888,{ 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88 } };
@@ -40,7 +47,11 @@ public:
         return guid_cmd_topmost;
     }
 
-    void get_name(t_uint32 p_index, pfc::string_base& p_out) override { p_out = ""; }
+    void get_name(t_uint32 p_index, pfc::string_base& p_out) override {
+        if (p_index == 0) p_out = "\xE5\x90\xAF\xE7\x94\xA8\xE6\xA1\x8C\xE9\x9D\xA2\xE6\xAD\x8C\xE8\xAF\x8D";
+        else if (p_index == 1) p_out = "\xE9\x94\x81\xE5\xAE\x9A\xE6\xA1\x8C\xE9\x9D\xA2\xE6\xAD\x8C\xE8\xAF\x8D";
+        else p_out = "\xE7\xBD\xAE\xE9\xA1\xB6\xE6\xA1\x8C\xE9\x9D\xA2\xE6\xAD\x8C\xE8\xAF\x8D";
+    }
 
     bool get_description(t_uint32 p_index, pfc::string_base& p_out) override {
         p_out = "";
@@ -49,20 +60,12 @@ public:
 
     bool get_display(t_uint32 p_index, pfc::string_base& p_text, t_uint32& p_flags) override {
         p_flags = 0;
-        if (p_index == 0) {
-            // 【修改】可见时显示“关闭桌面歌词”，不可见时显示“启用桌面歌词”
-            p_text = g_isVisible ? "\xE5\x85\xB3\xE9\x97\xAD\xE6\xA1\x8C\xE9\x9D\xA2\xE6\xAD\x8C\xE8\xAF\x8D" : "\xE5\x90\xAF\xE7\x94\xA8\xE6\xA1\x8C\xE9\x9D\xA2\xE6\xAD\x8C\xE8\xAF\x8D";
-            return true;
-        }
-        if (p_index == 1) {
-            p_text = g_isLocked ? "\xE8\xA7\xA3\xE9\x94\x81\xE6\xA1\x8C\xE9\x9D\xA2\xE6\xAD\x8C\xE8\xAF\x8D" : "\xE9\x94\x81\xE5\xAE\x9A\xE6\xA1\x8C\xE9\x9D\xA2\xE6\xAD\x8C\xE8\xAF\x8D";
-            return true;
-        }
-        if (p_index == 2) {
-            p_text = "\xE7\xBD\xAE\xE9\xA1\xB6\xE6\xAD\x8C\xE8\xAF\x8D\xE7\xAA\x97\xE5\x8F\xA3";
-            if (g_isTopmost) p_flags |= mainmenu_commands::flag_checked;
-            return true;
-        }
+        get_name(p_index, p_text);
+
+        if (p_index == 0 && g_isVisible) p_flags |= mainmenu_commands::flag_checked;
+        if (p_index == 1 && g_isLocked) p_flags |= mainmenu_commands::flag_checked;
+        if (p_index == 2 && g_isTopmost) p_flags |= mainmenu_commands::flag_checked;
+
         return true;
     }
 
@@ -121,6 +124,8 @@ public:
 
     void execute(t_uint32 p_index, service_ptr_t<service_base> p_callback) override {
         if (p_index == 0) {
+            g_reload_flag++;
+
             metadb_handle_ptr item;
             if (playback_control::get()->get_now_playing(item)) {
                 FetchLyricsNow(item);
@@ -147,7 +152,7 @@ public:
     }
 
     void get_name(t_uint32 p_index, pfc::string_base& p_out) override {
-        if (p_index == 0) p_out = "\xE6\x98\xBE\xE7\xA4\xBA\xE5\x8F\x8C\xE8\xAF\xAD\xE6\xAD\x8C\xE8\xAF\x8D\xEF\xBC\x88\xE5\xA6\x82\xE6\x9E\x9C\xE6\x9C\x89\xEF\xBC\x89";
+        if (p_index == 0) p_out = "\xE6\x98\xBE\xE7\xA4\xBA\xE5\x8F\x8C\xE8\xAF\xAD\xE6\xAD\x8C\xE8\xAF\x8D";
         else if (p_index == 1) p_out = "\xE4\xBB\x85\xE6\x98\xBE\xE7\xA4\xBA\xE8\x92\x99\xE5\x8F\xA4\xE6\x96\x87";
         else p_out = "\xE4\xBB\x85\xE6\x98\xBE\xE7\xA4\xBA\xE4\xB8\xAD\xE6\x96\x87\xE7\xBF\xBB\xE8\xAF\x91";
     }
@@ -169,7 +174,12 @@ public:
     GUID get_parent() override { return guid_menu_display; }
 
     void execute(t_uint32 p_index, service_ptr_t<service_base> p_callback) override {
+        // 同时设置桌面和面板的显示模式
         g_displayMode = (int)p_index;
+        g_panelDisplayMode = (int)p_index;
+
+        SavePanelSettings(); // 保存面板设置，防止重启后回退
+
         if (g_hwndLyrics) {
             InvalidateRect(g_hwndLyrics, NULL, TRUE);
         }

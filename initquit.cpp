@@ -17,21 +17,23 @@
 #pragma comment(lib, "d2d1.lib")
 
 extern const GUID guid_preferences_page;
+extern const GUID guid_pref_desktop;
 
 DECLARE_COMPONENT_VERSION(
     "\xE8\x92\x99\xE5\x8F\xA4\xE6\x96\x87\xE6\xAD\x8C\xE8\xAF\x8D",
-    "1.0.1",
+    "1.1.0",
     "Author: lsfacg\n"
     "A Desktop Lyric plugin for Traditional Mongolian.\n"
     "Special thanks to the Wucai Hulunbuir Children's Choir.\n"
     "Github: https://github.com/lsfacg/foo_mongol_lyric"
 );
 
-bool g_isVisible = false;
+bool g_isVisible = true;
 bool g_isLocked = false;
 bool g_isTopmost = true;
 HWND g_hwndLyrics = NULL;
 int g_displayMode = 0;
+int g_reload_flag = 0;
 
 int g_windowWidth = 250;
 int g_windowHeight = 800;
@@ -57,13 +59,16 @@ struct LyricLine {
 };
 
 std::vector<LyricLine> g_Lyrics;
-std::wstring g_currentMongolText = L"等待播放...";
+// 【修改】初始状态改为播放已停止
+std::wstring g_currentMongolText = L"播放已停止";
 std::wstring g_currentChineseText = L"";
 int g_currentLineIndex = -1;
 
 double g_playbackTime = 0.0;
 DWORD g_lastTick = 0;
 bool g_isPlaying = false;
+
+double g_currentTime = 0.0;
 
 CRITICAL_SECTION g_csLyrics;
 const wchar_t* REG_PATH = L"Software\\foo_mongol_lyric";
@@ -148,7 +153,7 @@ void LoadSettings(HWND hwnd) {
     HKEY hKey;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, REG_PATH, 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
         DWORD type, size;
-        int x = 100, y = 100, vis = 0, fs = 40, locked = 0, topmost = 1;
+        int x = 100, y = 100, vis = 1, fs = 40, locked = 0, topmost = 1;
         size = sizeof(int);
         RegQueryValueExW(hKey, L"X", NULL, &type, (LPBYTE)&x, &size);
         RegQueryValueExW(hKey, L"Y", NULL, &type, (LPBYTE)&y, &size);
@@ -424,7 +429,7 @@ void FetchLyricsNow(metadb_handle_ptr item) {
     }
     else {
         g_Lyrics.clear();
-        g_currentMongolText = L"没找到歌词";
+        g_currentMongolText = L"未找到歌词";
         g_currentChineseText = L"";
     }
     LeaveCriticalSection(&g_csLyrics);
@@ -498,6 +503,12 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_MOUSEWHEEL:
     {
         if (GET_KEYSTATE_WPARAM(wParam) & MK_CONTROL) {
+            // 【修改】加入防抖逻辑，防止一次滚动触发多次导致跨越太大
+            static DWORD lastWheelTime = 0;
+            DWORD currentTime = GetTickCount();
+            if (currentTime - lastWheelTime < 50) return 0;
+            lastWheelTime = currentTime;
+
             short zDelta = GET_WHEEL_DELTA_WPARAM(wParam);
             if (zDelta > 0) UpdateFontSize(1);
             else UpdateFontSize(-1);
@@ -521,6 +532,8 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             currentTime = g_playbackTime;
         }
 
+        g_currentTime = currentTime;
+
         bool needsRepaint = false;
         if (!g_Lyrics.empty()) {
             int newIndex = -1;
@@ -540,6 +553,12 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                     g_currentChineseText = L"";
                 }
                 needsRepaint = true;
+            }
+            else if (g_currentLineIndex >= 0 && g_isPlaying) {
+                double lineStart = g_Lyrics[g_currentLineIndex].time;
+                if (currentTime - lineStart > 2.0) {
+                    needsRepaint = true;
+                }
             }
         }
         LeaveCriticalSection(&g_csLyrics);
@@ -598,7 +617,7 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             }
             else if (g_hoveredButton == 2) {
                 fb2k::inMainThread([] {
-                    static_api_ptr_t<ui_control>()->show_preferences(guid_preferences_page);
+                    static_api_ptr_t<ui_control>()->show_preferences(guid_pref_desktop);
                     });
             }
             else if (g_hoveredButton == 3) {
@@ -614,24 +633,60 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     {
         if (g_isLocked) return 0;
         HMENU hMenu = CreatePopupMenu();
-        AppendMenuW(hMenu, MF_STRING, 1, L"\u5173\u95ED\u684C\u9762\u6B4C\u8BCD");
+        HMENU hSubMenu = CreatePopupMenu();
+
+        AppendMenuW(hMenu, MF_STRING | (g_isVisible ? MF_CHECKED : MF_UNCHECKED), 1, L"\u542F\u7528\u684C\u9762\u6B4C\u8BCD");
         AppendMenuW(hMenu, MF_STRING | (g_isLocked ? MF_CHECKED : MF_UNCHECKED), 2, L"\u9501\u5B9A\u684C\u9762\u6B4C\u8BCD");
-        AppendMenuW(hMenu, MF_STRING | (g_isTopmost ? MF_CHECKED : MF_UNCHECKED), 3, L"\u7F6E\u9876\u6B4C\u8BCD\u7A97\u53E3");
+        AppendMenuW(hMenu, MF_STRING | (g_isTopmost ? MF_CHECKED : MF_UNCHECKED), 3, L"\u7F6E\u9876\u684C\u9762\u6B4C\u8BCD");
+        AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+
+        AppendMenuW(hSubMenu, MF_STRING | (g_displayMode == 0 ? MF_CHECKED : MF_UNCHECKED), 10, L"\u663E\u793A\u53CC\u8BED\u6B4C\u8BCD");
+        AppendMenuW(hSubMenu, MF_STRING | (g_displayMode == 1 ? MF_CHECKED : MF_UNCHECKED), 11, L"\u4EC5\u663E\u793A\u8499\u53E4\u6587");
+        AppendMenuW(hSubMenu, MF_STRING | (g_displayMode == 2 ? MF_CHECKED : MF_UNCHECKED), 12, L"\u4EC5\u663E\u793A\u4E2D\u6587\u7FFB\u8BD1");
+        AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)hSubMenu, L"\u53CC\u8BED\u6B4C\u8BCD\u663E\u793A");
+
+        AppendMenuW(hMenu, MF_STRING, 4, L"\u91CD\u65B0\u8F7D\u5165\u6B4C\u8BCD");
+        AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+        AppendMenuW(hMenu, MF_STRING, 5, L"\u684C\u9762\u6B4C\u8BCD\u8BBE\u7F6E");
 
         POINT pt; GetCursorPos(&pt);
         int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, hwnd, NULL);
+        DestroyMenu(hSubMenu);
         DestroyMenu(hMenu);
 
-        if (cmd == 1) { g_isVisible = false; ShowWindow(hwnd, SW_HIDE); SaveSettings(hwnd); }
-        if (cmd == 2) {
-            g_isLocked = true;
-            SetWindowLongPtr(hwnd, GWL_EXSTYLE, GetWindowLongPtr(hwnd, GWL_EXSTYLE) | WS_EX_TRANSPARENT);
+        if (cmd == 1) {
+            g_isVisible = !g_isVisible;
+            ShowWindow(hwnd, g_isVisible ? SW_SHOW : SW_HIDE);
             SaveSettings(hwnd);
         }
-        if (cmd == 3) {
+        else if (cmd == 2) {
+            g_isLocked = !g_isLocked;
+            SetWindowLongPtr(hwnd, GWL_EXSTYLE, GetWindowLongPtr(hwnd, GWL_EXSTYLE) | (g_isLocked ? WS_EX_TRANSPARENT : 0));
+            if (!g_isLocked) SetWindowLongPtr(hwnd, GWL_EXSTYLE, GetWindowLongPtr(hwnd, GWL_EXSTYLE) & ~WS_EX_TRANSPARENT);
+            SaveSettings(hwnd);
+        }
+        else if (cmd == 3) {
             g_isTopmost = !g_isTopmost;
             SetWindowPos(hwnd, g_isTopmost ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
             SaveSettings(hwnd);
+        }
+        else if (cmd == 4) {
+            fb2k::inMainThread([] {
+                metadb_handle_ptr item;
+                if (playback_control::get()->get_now_playing(item)) {
+                    FetchLyricsNow(item);
+                    if (g_hwndLyrics) InvalidateRect(g_hwndLyrics, NULL, TRUE);
+                }
+                });
+        }
+        else if (cmd == 5) {
+            fb2k::inMainThread([] {
+                static_api_ptr_t<ui_control>()->show_preferences(guid_pref_desktop);
+                });
+        }
+        else if (cmd >= 10 && cmd <= 12) {
+            g_displayMode = cmd - 10;
+            InvalidateRect(hwnd, NULL, TRUE);
         }
         return 0;
     }
@@ -675,6 +730,9 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         }
 
         std::wstring displayMongolian, displayChinese;
+        int currentLineIdx = -1;
+        double currentTime = 0.0;
+
         EnterCriticalSection(&g_csLyrics);
         if (g_displayMode == 0) {
             displayMongolian = g_currentMongolText;
@@ -688,6 +746,8 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             displayMongolian = L"";
             displayChinese = g_currentChineseText;
         }
+        currentLineIdx = g_currentLineIndex;
+        currentTime = g_currentTime;
         LeaveCriticalSection(&g_csLyrics);
 
         int steps = 16;
@@ -725,10 +785,11 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 DWRITE_TEXT_RANGE chRange = { chStart, chLength };
 
                 pLayout->SetFontFamilyName(g_chineseFont.c_str(), chRange);
+                pLayout->SetFontWeight(DWRITE_FONT_WEIGHT_NORMAL, chRange);
                 pLayout->SetFontSize((float)(g_fontSize - 5), chRange);
 
                 for (const auto& range : spaceRanges) {
-                    pLayout->SetFontSize(7.0f, range); // 【修改】从 5.0f 调整到 7.0f，字间距再次微调拉大
+                    pLayout->SetFontSize(7.0f, range);
                 }
             }
 
@@ -738,7 +799,31 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             float startX = (width - metrics.width) / 2.0f;
             if (startX < 10.0f) startX = 10.0f;
 
-            D2D1_POINT_2F origin = D2D1::Point2F(startX, 90.0f);
+            float startY = 90.0f;
+            float bottomMargin = 10.0f;
+            float availableHeight = (float)height - startY - bottomMargin;
+            float offsetY = 0.0f;
+
+            if (metrics.height > availableHeight && currentLineIdx >= 0 && currentLineIdx < (int)g_Lyrics.size()) {
+                double lineStart = g_Lyrics[currentLineIdx].time;
+                double elapsed = currentTime - lineStart;
+                if (elapsed > 2.0) {
+                    float overflow = metrics.height - availableHeight;
+                    float scrollSpeed = overflow / 3.0f;
+                    offsetY = (float)(elapsed - 2.0) * scrollSpeed;
+                    if (offsetY > overflow) {
+                        offsetY = overflow;
+                    }
+                }
+            }
+
+            D2D1_POINT_2F origin = D2D1::Point2F(startX, startY - offsetY);
+
+            bool needClip = (offsetY > 0.0f);
+            if (needClip) {
+                D2D1_RECT_F clipRect = D2D1::RectF(0.0f, startY, (float)width, (float)height);
+                g_pDCRenderTarget->PushAxisAlignedClip(clipRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            }
 
             if (!displayMongolian.empty()) {
                 DWRITE_TEXT_RANGE mongRange = { 0, (UINT32)displayMongolian.length() };
@@ -786,6 +871,10 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
             g_pDCRenderTarget->DrawTextLayout(origin, pLayout, g_pMongolBrush);
             pLayout->Release();
+
+            if (needClip) {
+                g_pDCRenderTarget->PopAxisAlignedClip();
+            }
         }
 
         if (g_isHovered && g_pUIFontFormat) {
@@ -841,6 +930,7 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (g_pHoverBrush) g_pHoverBrush->Release();
         if (g_pUIBrush) g_pUIBrush->Release();
         if (g_pUIHoverBrush) g_pUIHoverBrush->Release();
+
         if (g_pDCRenderTarget) g_pDCRenderTarget->Release();
         if (g_pMongolFormat) g_pMongolFormat->Release();
         if (g_pUIFontFormat) g_pUIFontFormat->Release();
