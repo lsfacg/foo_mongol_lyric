@@ -41,44 +41,4 @@ foobar2000 Traditional Mongolian Vertical Lyrics Plugin<br>
 2.右键面板标题处，点击“新标签”<br>
 3.右键新标签空白处，点击“添加新的用户界面组件”<br>
 4.选择“蒙古文歌词”，点击“确定”<br>
-5.“视图/布局”，取消勾选“启用布局编辑模式”<br>
-
-1. Supports vertical display of traditional Mongolian and vertical Chinese translated lyrics<br>
-2. Supports desktop lyrics and embedded window panel lyrics<br>
-3. Supports dragging lyrics to sync with audio playback<br>
-4. Embedded window panel lyrics support fullscreen<br>
-5. Lyrics font size can be adjusted using “Ctrl” + mouse wheel or touch gestures<br>
-6. Supports changing fonts (Windows installed fonts)<br>
-7. Supports customizing lyrics text and border color, adjusting border thickness<br>
-8. Supports keeping desktop lyrics on top and locking them<br>
-9. Option to display bilingual lyrics, Mongolian only, or Chinese translation only<br>
-10. Allows separate settings for Mongolian and Chinese font colors and border colors<br>
-
-Notes:<br>
-1. Only supports traditional Mongolian in Unicode standard encoding<br>
-2. Automatically reads ID3 tag embedded LYRICS in audio files and LRC lyrics files with the same name in the same path<br>
-3. The plugin does not currently support online searches; please prepare audio files with embedded lyrics or LRC lyrics files yourself<br>
-4. Only supports x64<br>
-5. Does not currently support displaying plain text without a timeline<br>
-
-How to write lyrics:<br>
-[Timeline] Mongolian<br>
-[Timeline] Chinese translation<br>
-Example:<br>
-[00:00.00]ᠮᠣᠩᠭᠣᠯ ᠬᠡᠯᠡ<br>
-[00:00.00]Mongolian<br>
-[00:10.00]ᠦᠭᠡ<br>
-[00:10.00]Lyrics by<br>
-[00:15.00]ᠠᠶ᠎ᠠ<br>
-[00:15.00]Composed by<br>
-
-Installation method:<br>
-1. Open foobar2000 “Preferences”, click on “Components”, then drag foo_mongol_lyric.fb2k-component into the window<br>
-2. Or just double-click foo_mongol_lyric.fb2k-component<br>
-
-How to add embedded panel lyrics:<br>
-1. Go to “View/Layout/Enable Layout Editing Mode”, click “OK” on the pop-up window<br>
-2. Right-click on the panel title and click “New Tab”<br>
-3. Right-click on the blank space of the new tab and click “Add New User Interface Component”<br>
-4. Select “Mongolian Lyrics” and click “OK”<br>
-5. Go to “View/Layout” and uncheck “Enable Layout Editing Mode"
+5.“视图/布局”，取消勾选“启用布局编辑模式”
