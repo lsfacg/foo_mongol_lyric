@@ -41,7 +41,7 @@ foobar2000 Traditional Mongolian Vertical Lyrics Plugin<br>
 2.右键面板标题处，点击“新标签”<br>
 3.右键新标签空白处，点击“添加新的用户界面组件”<br>
 4.选择“蒙古文歌词”，点击“确定”<br>
-5.“视图/布局”，取消勾选“启用布局编辑模式”
+5.“视图/布局”，取消勾选“启用布局编辑模式”<br>
 
 1. Supports vertical display of traditional Mongolian and vertical Chinese translated lyrics<br>
 2. Supports desktop lyrics and embedded window panel lyrics<br>
