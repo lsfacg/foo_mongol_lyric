@@ -111,6 +111,7 @@ private:
     ID2D1SolidColorBrush* m_pChineseBrush;
     ID2D1SolidColorBrush* m_pHighlightMongolBrush;
     ID2D1SolidColorBrush* m_pHighlightChineseBrush;
+    ID2D1StrokeStyle* m_pDashedStrokeStyle; // 全屏虚线样式
     MongolPanelInstance* m_pParent;
     int m_lastFontSize;
     std::wstring m_lastMFont, m_lastCFont;
@@ -175,6 +176,7 @@ public:
     ID2D1SolidColorBrush* m_pChineseBrush = nullptr;
     ID2D1SolidColorBrush* m_pHighlightMongolBrush = nullptr;
     ID2D1SolidColorBrush* m_pHighlightChineseBrush = nullptr;
+    ID2D1StrokeStyle* m_pDashedStrokeStyle = nullptr; // 面板虚线样式
 
     std::vector<PanelLyricLine> m_lyrics;
     FullScreenLyric* m_pFullScreen = nullptr;
@@ -249,7 +251,7 @@ public:
 FullScreenLyric::FullScreenLyric(MongolPanelInstance* parent) :
     m_pD2DFactory(nullptr), m_pRenderTarget(nullptr), m_pDWriteFactory(nullptr), m_pMongolFormat(nullptr),
     m_pMongolBrush(nullptr), m_pChineseBrush(nullptr), m_pHighlightMongolBrush(nullptr), m_pHighlightChineseBrush(nullptr),
-    m_pParent(parent), m_lastFontSize(-1), m_isMouseDown(false), m_isActuallyDragging(false), m_dragStartX(0),
+    m_pDashedStrokeStyle(nullptr), m_pParent(parent), m_lastFontSize(-1), m_isMouseDown(false), m_isActuallyDragging(false), m_dragStartX(0),
     m_dragStartVirtualIdx(0.0f), m_currentDragVirtualIdx(0.0f), m_isSnapping(false), m_snapStartIdx(0.0f),
     m_snapTargetIdx(0.0f), m_lastRenderIdx(-1), m_animStartTick(0), m_lastReloadFlag(0) {
 }
@@ -263,6 +265,7 @@ FullScreenLyric::~FullScreenLyric() {
     if (m_pDWriteFactory) m_pDWriteFactory->Release();
     if (m_pRenderTarget) m_pRenderTarget->Release();
     if (m_pD2DFactory) m_pD2DFactory->Release();
+    if (m_pDashedStrokeStyle) m_pDashedStrokeStyle->Release();
 }
 
 void FullScreenLyric::InitFullScreen() {
@@ -278,7 +281,12 @@ void FullScreenLyric::InitFullScreen() {
     m_pMongolFormat->SetFlowDirection(DWRITE_FLOW_DIRECTION_LEFT_TO_RIGHT);
     m_pMongolFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
     m_pMongolFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
-    m_pMongolFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    m_pMongolFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP); // 取消自动换行
+
+    D2D1_STROKE_STYLE_PROPERTIES strokeProps = D2D1::StrokeStyleProperties(
+        D2D1_CAP_STYLE_FLAT, D2D1_CAP_STYLE_FLAT, D2D1_CAP_STYLE_FLAT,
+        D2D1_LINE_JOIN_MITER, 10.0f, D2D1_DASH_STYLE_DASH, 0.0f);
+    m_pD2DFactory->CreateStrokeStyle(strokeProps, nullptr, 0, &m_pDashedStrokeStyle);
 
     int screenW = GetSystemMetrics(SM_CXSCREEN);
     int screenH = GetSystemMetrics(SM_CYSCREEN);
@@ -319,7 +327,6 @@ LRESULT FullScreenLyric::OnTimer(UINT, WPARAM, LPARAM, BOOL&) {
 
 LRESULT FullScreenLyric::OnMouseWheel(UINT, WPARAM wParam, LPARAM, BOOL&) {
     if (GET_KEYSTATE_WPARAM(wParam) & MK_CONTROL) {
-        // 【修改】加入防抖逻辑
         static DWORD lastWheelTime = 0;
         DWORD currentTime = GetTickCount();
         if (currentTime - lastWheelTime < 50) return 0;
@@ -456,6 +463,17 @@ LRESULT FullScreenLyric::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
 
         if (m_pMongolFormat && !renderLyrics.empty()) {
             float visualOffsetX = width * -0.1f; float centerX = width / 2.0f + visualOffsetX; float startY = height / 2.0f - 450.0f; float step = (float)g_panelFontSize * 8.0f; float virtualIdx = 0.0f;
+
+            if (m_isActuallyDragging || m_isSnapping) {
+                m_pRenderTarget->DrawLine(
+                    D2D1::Point2F(centerX, 0.0f),
+                    D2D1::Point2F(centerX, height),
+                    m_pHighlightMongolBrush,
+                    2.0f,
+                    m_pDashedStrokeStyle
+                );
+            }
+
             if (renderLyrics.size() == 1) { virtualIdx = 0.0f; }
             else {
                 if (m_isActuallyDragging) { virtualIdx = m_currentDragVirtualIdx; }
@@ -465,13 +483,19 @@ LRESULT FullScreenLyric::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
                         if (currentIdx != m_lastRenderIdx) { m_lastRenderIdx = currentIdx; m_animStartTick = GetTickCount(); }
                         float animProgress = (GetTickCount() - m_animStartTick) / 200.0f; if (animProgress > 1.0f) animProgress = 1.0f;
                         float smoothProgress = animProgress * animProgress * (3.0f - 2.0f * animProgress); virtualIdx = (float)currentIdx;
-                        // 【修复】第一句歌词不执行滑入动画
                         if (currentIdx > 0 && animProgress < 1.0f) virtualIdx = (float)currentIdx - 1.0f + smoothProgress;
                     }
                 }
             }
-            if (currentIdx >= 0 && currentIdx < (int)renderLyrics.size()) {
-                int startIdx = currentIdx > 8 ? currentIdx - 8 : 0; int endIdx = currentIdx + 15 < (int)renderLyrics.size() ? currentIdx + 15 : (int)renderLyrics.size() - 1;
+
+            int highlightIdx = currentIdx;
+            if (m_isActuallyDragging) highlightIdx = (int)round(m_currentDragVirtualIdx);
+            else if (m_isSnapping) highlightIdx = (int)round(m_snapTargetIdx);
+
+            if (highlightIdx >= 0 && highlightIdx < (int)renderLyrics.size()) {
+                int startIdx = highlightIdx > 8 ? highlightIdx - 8 : 0;
+                int endIdx = highlightIdx + 15 < (int)renderLyrics.size() ? highlightIdx + 15 : (int)renderLyrics.size() - 1;
+
                 for (int i = startIdx; i <= endIdx; i++) {
                     std::wstring mText = renderLyrics[i].mongolText; std::wstring cText = renderLyrics[i].chineseText; if (g_panelDisplayMode == 1) cText.clear(); if (g_panelDisplayMode == 2) mText.clear(); if (mText.empty() && cText.empty()) continue;
                     std::wstring fullText; std::vector<DWRITE_TEXT_RANGE> spaceRanges; UINT32 mongEnd = 0; UINT32 chStart = 0; UINT32 chLen = 0;
@@ -479,14 +503,53 @@ LRESULT FullScreenLyric::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
                     if (!mText.empty() && !cText.empty()) { fullText += L"\n"; chStart = (UINT32)fullText.length(); for (size_t j = 0; j < cText.length(); ++j) { fullText += cText[j]; if (j < cText.length() - 1) { spaceRanges.push_back({ (UINT32)fullText.length(), 1 }); fullText += L" "; } } chLen = (UINT32)fullText.length() - chStart; }
                     else if (mText.empty() && !cText.empty()) { chStart = 0; for (size_t j = 0; j < cText.length(); ++j) { fullText += cText[j]; if (j < cText.length() - 1) { spaceRanges.push_back({ (UINT32)fullText.length(), 1 }); fullText += L" "; } } chLen = (UINT32)fullText.length(); }
                     if (fullText.empty()) continue;
-                    IDWriteTextLayout* pLayout = nullptr; m_pDWriteFactory->CreateTextLayout(fullText.c_str(), (UINT32)fullText.length(), m_pMongolFormat, 5000.0f, 5000.0f, &pLayout);
+                    IDWriteTextLayout* pLayout = nullptr;
+
+                    m_pDWriteFactory->CreateTextLayout(fullText.c_str(), (UINT32)fullText.length(), m_pMongolFormat, 5000.0f, 5000.0f, &pLayout);
+
                     if (pLayout) {
-                        if (!mText.empty()) { DWRITE_TEXT_RANGE rangeM = { 0, mongEnd }; pLayout->SetFontFamilyName(g_panelMongolFont.c_str(), rangeM); pLayout->SetDrawingEffect((i == currentIdx) ? m_pHighlightMongolBrush : m_pMongolBrush, rangeM); }
-                        if (!mText.empty() && !cText.empty()) { DWRITE_TEXT_RANGE rangeNewline = { mongEnd, 1 }; pLayout->SetFontSize(1.0f, rangeNewline); pLayout->SetDrawingEffect((i == currentIdx) ? m_pHighlightMongolBrush : m_pMongolBrush, rangeNewline); DWRITE_TEXT_RANGE rangeC = { chStart, chLen }; pLayout->SetFontFamilyName(g_panelChineseFont.c_str(), rangeC); pLayout->SetFontWeight(DWRITE_FONT_WEIGHT_NORMAL, rangeC); pLayout->SetDrawingEffect((i == currentIdx) ? m_pHighlightChineseBrush : m_pChineseBrush, rangeC); }
-                        else if (mText.empty() && !cText.empty()) { DWRITE_TEXT_RANGE rangeC = { 0, chLen }; pLayout->SetFontFamilyName(g_panelChineseFont.c_str(), rangeC); pLayout->SetFontWeight(DWRITE_FONT_WEIGHT_NORMAL, rangeC); pLayout->SetDrawingEffect((i == currentIdx) ? m_pHighlightChineseBrush : m_pChineseBrush, rangeC); }
+                        if (!mText.empty()) { DWRITE_TEXT_RANGE rangeM = { 0, mongEnd }; pLayout->SetFontFamilyName(g_panelMongolFont.c_str(), rangeM); pLayout->SetDrawingEffect((i == highlightIdx) ? m_pHighlightMongolBrush : m_pMongolBrush, rangeM); }
+                        if (!mText.empty() && !cText.empty()) { DWRITE_TEXT_RANGE rangeNewline = { mongEnd, 1 }; pLayout->SetFontSize(1.0f, rangeNewline); pLayout->SetDrawingEffect((i == highlightIdx) ? m_pHighlightMongolBrush : m_pMongolBrush, rangeNewline); DWRITE_TEXT_RANGE rangeC = { chStart, chLen }; pLayout->SetFontFamilyName(g_panelChineseFont.c_str(), rangeC); pLayout->SetFontWeight(DWRITE_FONT_WEIGHT_NORMAL, rangeC); pLayout->SetDrawingEffect((i == highlightIdx) ? m_pHighlightChineseBrush : m_pChineseBrush, rangeC); }
+                        else if (mText.empty() && !cText.empty()) { DWRITE_TEXT_RANGE rangeC = { 0, chLen }; pLayout->SetFontFamilyName(g_panelChineseFont.c_str(), rangeC); pLayout->SetFontWeight(DWRITE_FONT_WEIGHT_NORMAL, rangeC); pLayout->SetDrawingEffect((i == highlightIdx) ? m_pHighlightChineseBrush : m_pChineseBrush, rangeC); }
                         for (const auto& r : spaceRanges) { pLayout->SetFontSize(7.0f, r); }
-                        DWRITE_TEXT_METRICS metrics; pLayout->GetMetrics(&metrics); float totalW = metrics.width; float lineOffset = (i - virtualIdx) * step; float currentCenterX = centerX + lineOffset; float startX = currentCenterX - totalW / 2.0f;
-                        m_pRenderTarget->DrawTextLayout(D2D1::Point2F(startX, startY), pLayout, m_pMongolBrush); pLayout->Release();
+
+                        DWRITE_TEXT_METRICS metrics;
+                        pLayout->GetMetrics(&metrics);
+                        float totalW = metrics.width;
+                        float lineOffset = (i - virtualIdx) * step;
+                        float currentCenterX = centerX + lineOffset;
+                        float startX = currentCenterX - totalW / 2.0f;
+
+                        // === 全屏滚动 ===
+                        float availableHeight = height - startY - 100.0f;
+                        float offsetY = 0.0f;
+                        if (i == highlightIdx && metrics.height > availableHeight) {
+                            double elapsed = currentTime - renderLyrics[i].time;
+
+                            // 【核心修复】如果正在拖动或吸附，强制从头开始显示
+                            if (m_isActuallyDragging || m_isSnapping) elapsed = 0.0;
+
+                            if (elapsed > 0.5) {
+                                float overflow = metrics.height - availableHeight + 30.0f;
+                                float scrollSpeed = overflow / 3.5f; // 放慢到 3.5 秒
+                                offsetY = (float)(elapsed - 0.5) * scrollSpeed;
+                                if (offsetY > overflow) offsetY = overflow;
+                            }
+                        }
+
+                        bool needClip = (offsetY > 0.0f);
+                        if (needClip) {
+                            D2D1_RECT_F clipRect = D2D1::RectF(0.0f, startY, width, height);
+                            m_pRenderTarget->PushAxisAlignedClip(clipRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                        }
+
+                        m_pRenderTarget->DrawTextLayout(D2D1::Point2F(startX, startY - offsetY), pLayout, m_pMongolBrush);
+
+                        if (needClip) {
+                            m_pRenderTarget->PopAxisAlignedClip();
+                        }
+
+                        pLayout->Release();
                     }
                 }
             }
@@ -569,6 +632,11 @@ MongolPanelInstance::MongolPanelInstance(ui_element_config::ptr cfg, ui_element_
     m_pMongolFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
     m_pMongolFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
     m_pMongolFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+
+    D2D1_STROKE_STYLE_PROPERTIES strokeProps = D2D1::StrokeStyleProperties(
+        D2D1_CAP_STYLE_FLAT, D2D1_CAP_STYLE_FLAT, D2D1_CAP_STYLE_FLAT,
+        D2D1_LINE_JOIN_MITER, 10.0f, D2D1_DASH_STYLE_DASH, 0.0f);
+    m_pD2DFactory->CreateStrokeStyle(strokeProps, nullptr, 0, &m_pDashedStrokeStyle);
 }
 
 MongolPanelInstance::~MongolPanelInstance() {
@@ -576,6 +644,7 @@ MongolPanelInstance::~MongolPanelInstance() {
     if (m_pHighlightMongolBrush) m_pHighlightMongolBrush->Release(); if (m_pHighlightChineseBrush) m_pHighlightChineseBrush->Release();
     if (m_pMongolFormat) m_pMongolFormat->Release(); if (m_pDWriteFactory) m_pDWriteFactory->Release();
     if (m_pRenderTarget) m_pRenderTarget->Release(); if (m_pD2DFactory) m_pD2DFactory->Release();
+    if (m_pDashedStrokeStyle) m_pDashedStrokeStyle->Release();
 }
 void MongolPanelInstance::initialize_window(HWND parent) { WIN32_OP(Create(parent) != NULL); SetTimer(1, 16, NULL); }
 void MongolPanelInstance::notify(const GUID& p_what, t_size p_param1, const void* p_param2, t_size p_param2size) { if (p_what == ui_element_notify_colors_changed || p_what == ui_element_notify_visibility_changed) Invalidate(); }
@@ -583,7 +652,6 @@ LRESULT MongolPanelInstance::OnEraseBkgnd(UINT, WPARAM, LPARAM, BOOL&) { return 
 
 LRESULT MongolPanelInstance::OnMouseWheel(UINT, WPARAM wParam, LPARAM, BOOL&) {
     if (GET_KEYSTATE_WPARAM(wParam) & MK_CONTROL) {
-        // 【修改】加入防抖逻辑
         static DWORD lastWheelTime = 0;
         DWORD currentTime = GetTickCount();
         if (currentTime - lastWheelTime < 50) return 0;
@@ -748,6 +816,17 @@ LRESULT MongolPanelInstance::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
 
         if (m_pMongolFormat && !renderLyrics.empty()) {
             float visualOffsetX = width * -0.075f; float centerX = width / 2.0f + visualOffsetX; float virtualIdx = 0.0f;
+
+            if (m_isActuallyDragging || m_isSnapping) {
+                m_pRenderTarget->DrawLine(
+                    D2D1::Point2F(centerX, 0.0f),
+                    D2D1::Point2F(centerX, height),
+                    m_pHighlightMongolBrush,
+                    1.0f,
+                    m_pDashedStrokeStyle
+                );
+            }
+
             if (renderLyrics.size() == 1) { virtualIdx = 0.0f; }
             else {
                 if (m_isActuallyDragging) { virtualIdx = m_currentDragVirtualIdx; }
@@ -757,13 +836,20 @@ LRESULT MongolPanelInstance::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
                         if (currentIdx != m_lastRenderIdx) { m_lastRenderIdx = currentIdx; m_animStartTick = GetTickCount(); }
                         float animProgress = (GetTickCount() - m_animStartTick) / 200.0f; if (animProgress > 1.0f) animProgress = 1.0f;
                         float smoothProgress = animProgress * animProgress * (3.0f - 2.0f * animProgress); virtualIdx = (float)currentIdx;
-                        // 【修复】第一句歌词不执行滑入动画
                         if (currentIdx > 0 && animProgress < 1.0f) virtualIdx = (float)currentIdx - 1.0f + smoothProgress;
                     }
                 }
             }
-            if (currentIdx >= 0 && currentIdx < (int)renderLyrics.size()) {
-                int startIdx = currentIdx > 8 ? currentIdx - 8 : 0; int endIdx = currentIdx + 15 < (int)renderLyrics.size() ? currentIdx + 15 : (int)renderLyrics.size() - 1; float step = (float)g_panelFontSize * 4.0f;
+
+            int highlightIdx = currentIdx;
+            if (m_isActuallyDragging) highlightIdx = (int)round(m_currentDragVirtualIdx);
+            else if (m_isSnapping) highlightIdx = (int)round(m_snapTargetIdx);
+
+            if (highlightIdx >= 0 && highlightIdx < (int)renderLyrics.size()) {
+                int startIdx = highlightIdx > 8 ? highlightIdx - 8 : 0;
+                int endIdx = highlightIdx + 15 < (int)renderLyrics.size() ? highlightIdx + 15 : (int)renderLyrics.size() - 1;
+                float step = (float)g_panelFontSize * 4.0f;
+
                 for (int i = startIdx; i <= endIdx; i++) {
                     std::wstring mText = renderLyrics[i].mongolText; std::wstring cText = renderLyrics[i].chineseText; if (g_panelDisplayMode == 1) cText.clear(); if (g_panelDisplayMode == 2) mText.clear(); if (mText.empty() && cText.empty()) continue;
                     std::wstring fullText; std::vector<DWRITE_TEXT_RANGE> spaceRanges; UINT32 mongEnd = 0; UINT32 chStart = 0; UINT32 chLen = 0;
@@ -771,14 +857,54 @@ LRESULT MongolPanelInstance::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
                     if (!mText.empty() && !cText.empty()) { fullText += L"\n"; chStart = (UINT32)fullText.length(); for (size_t j = 0; j < cText.length(); ++j) { fullText += cText[j]; if (j < cText.length() - 1) { spaceRanges.push_back({ (UINT32)fullText.length(), 1 }); fullText += L" "; } } chLen = (UINT32)fullText.length() - chStart; }
                     else if (mText.empty() && !cText.empty()) { chStart = 0; for (size_t j = 0; j < cText.length(); ++j) { fullText += cText[j]; if (j < cText.length() - 1) { spaceRanges.push_back({ (UINT32)fullText.length(), 1 }); fullText += L" "; } } chLen = (UINT32)fullText.length(); }
                     if (fullText.empty()) continue;
-                    IDWriteTextLayout* pLayout = nullptr; m_pDWriteFactory->CreateTextLayout(fullText.c_str(), (UINT32)fullText.length(), m_pMongolFormat, 5000.0f, 5000.0f, &pLayout);
+                    IDWriteTextLayout* pLayout = nullptr;
+
+                    m_pDWriteFactory->CreateTextLayout(fullText.c_str(), (UINT32)fullText.length(), m_pMongolFormat, 5000.0f, 5000.0f, &pLayout);
+
                     if (pLayout) {
-                        if (!mText.empty()) { DWRITE_TEXT_RANGE rangeM = { 0, mongEnd }; pLayout->SetFontFamilyName(g_panelMongolFont.c_str(), rangeM); pLayout->SetDrawingEffect((i == currentIdx) ? m_pHighlightMongolBrush : m_pMongolBrush, rangeM); }
-                        if (!mText.empty() && !cText.empty()) { DWRITE_TEXT_RANGE rangeNewline = { mongEnd, 1 }; pLayout->SetFontSize(1.0f, rangeNewline); pLayout->SetDrawingEffect((i == currentIdx) ? m_pHighlightMongolBrush : m_pMongolBrush, rangeNewline); DWRITE_TEXT_RANGE rangeC = { chStart, chLen }; pLayout->SetFontFamilyName(g_panelChineseFont.c_str(), rangeC); pLayout->SetFontWeight(DWRITE_FONT_WEIGHT_NORMAL, rangeC); pLayout->SetDrawingEffect((i == currentIdx) ? m_pHighlightChineseBrush : m_pChineseBrush, rangeC); }
-                        else if (mText.empty() && !cText.empty()) { DWRITE_TEXT_RANGE rangeC = { 0, chLen }; pLayout->SetFontFamilyName(g_panelChineseFont.c_str(), rangeC); pLayout->SetFontWeight(DWRITE_FONT_WEIGHT_NORMAL, rangeC); pLayout->SetDrawingEffect((i == currentIdx) ? m_pHighlightChineseBrush : m_pChineseBrush, rangeC); }
+                        if (!mText.empty()) { DWRITE_TEXT_RANGE rangeM = { 0, mongEnd }; pLayout->SetFontFamilyName(g_panelMongolFont.c_str(), rangeM); pLayout->SetDrawingEffect((i == highlightIdx) ? m_pHighlightMongolBrush : m_pMongolBrush, rangeM); }
+                        if (!mText.empty() && !cText.empty()) { DWRITE_TEXT_RANGE rangeNewline = { mongEnd, 1 }; pLayout->SetFontSize(1.0f, rangeNewline); pLayout->SetDrawingEffect((i == highlightIdx) ? m_pHighlightMongolBrush : m_pMongolBrush, rangeNewline); DWRITE_TEXT_RANGE rangeC = { chStart, chLen }; pLayout->SetFontFamilyName(g_panelChineseFont.c_str(), rangeC); pLayout->SetFontWeight(DWRITE_FONT_WEIGHT_NORMAL, rangeC); pLayout->SetDrawingEffect((i == highlightIdx) ? m_pHighlightChineseBrush : m_pChineseBrush, rangeC); }
+                        else if (mText.empty() && !cText.empty()) { DWRITE_TEXT_RANGE rangeC = { 0, chLen }; pLayout->SetFontFamilyName(g_panelChineseFont.c_str(), rangeC); pLayout->SetFontWeight(DWRITE_FONT_WEIGHT_NORMAL, rangeC); pLayout->SetDrawingEffect((i == highlightIdx) ? m_pHighlightChineseBrush : m_pChineseBrush, rangeC); }
                         for (const auto& r : spaceRanges) { pLayout->SetFontSize(7.0f, r); }
-                        DWRITE_TEXT_METRICS metrics; pLayout->GetMetrics(&metrics); float totalW = metrics.width; float lineOffset = (i - virtualIdx) * step; float currentCenterX = centerX + lineOffset; float startX = currentCenterX - totalW / 2.0f;
-                        m_pRenderTarget->DrawTextLayout(D2D1::Point2F(startX, 20.0f), pLayout, m_pMongolBrush); pLayout->Release();
+
+                        DWRITE_TEXT_METRICS metrics;
+                        pLayout->GetMetrics(&metrics);
+                        float totalW = metrics.width;
+                        float lineOffset = (i - virtualIdx) * step;
+                        float currentCenterX = centerX + lineOffset;
+                        float startX = currentCenterX - totalW / 2.0f;
+
+                        // === 面板滚动 ===
+                        float startY = 20.0f;
+                        float availableHeight = height - startY - 40.0f;
+                        float offsetY = 0.0f;
+                        if (i == highlightIdx && metrics.height > availableHeight) {
+                            double elapsed = currentTime - renderLyrics[i].time;
+
+                            // 【核心修复】如果正在拖动或吸附，强制从头开始显示
+                            if (m_isActuallyDragging || m_isSnapping) elapsed = 0.0;
+
+                            if (elapsed > 0.5) {
+                                float overflow = metrics.height - availableHeight + 20.0f;
+                                float scrollSpeed = overflow / 3.5f; // 放慢到 3.5 秒
+                                offsetY = (float)(elapsed - 0.5) * scrollSpeed;
+                                if (offsetY > overflow) offsetY = overflow;
+                            }
+                        }
+
+                        bool needClip = (offsetY > 0.0f);
+                        if (needClip) {
+                            D2D1_RECT_F clipRect = D2D1::RectF(0.0f, startY, width, height);
+                            m_pRenderTarget->PushAxisAlignedClip(clipRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                        }
+
+                        m_pRenderTarget->DrawTextLayout(D2D1::Point2F(startX, startY - offsetY), pLayout, m_pMongolBrush);
+
+                        if (needClip) {
+                            m_pRenderTarget->PopAxisAlignedClip();
+                        }
+
+                        pLayout->Release();
                     }
                 }
             }

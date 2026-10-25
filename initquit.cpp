@@ -21,7 +21,7 @@ extern const GUID guid_pref_desktop;
 
 DECLARE_COMPONENT_VERSION(
     "\xE8\x92\x99\xE5\x8F\xA4\xE6\x96\x87\xE6\xAD\x8C\xE8\xAF\x8D",
-    "1.1.0",
+    "1.1.1",
     "Author: lsfacg\n"
     "A Desktop Lyric plugin for Traditional Mongolian.\n"
     "Special thanks to the Wucai Hulunbuir Children's Choir.\n"
@@ -498,12 +498,13 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         LoadSettings(hwnd);
         InitDWrite();
         ShowWindow(hwnd, g_isVisible ? SW_SHOW : SW_HIDE);
-        SetTimer(hwnd, 1, 30, NULL);
+        // 【优化】降低分层窗口重绘频率，从 30ms 降到 40ms
+        SetTimer(hwnd, 1, 40, NULL);
         return 0;
     case WM_MOUSEWHEEL:
     {
         if (GET_KEYSTATE_WPARAM(wParam) & MK_CONTROL) {
-            // 【修改】加入防抖逻辑，防止一次滚动触发多次导致跨越太大
+            // 加入防抖逻辑，防止一次滚动触发多次导致跨越太大
             static DWORD lastWheelTime = 0;
             DWORD currentTime = GetTickCount();
             if (currentTime - lastWheelTime < 50) return 0;
@@ -556,7 +557,8 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             }
             else if (g_currentLineIndex >= 0 && g_isPlaying) {
                 double lineStart = g_Lyrics[g_currentLineIndex].time;
-                if (currentTime - lineStart > 2.0) {
+                // 【优化】重绘触发提前到 1.5 秒
+                if (currentTime - lineStart > 1.5) {
                     needsRepaint = true;
                 }
             }
@@ -804,13 +806,14 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             float availableHeight = (float)height - startY - bottomMargin;
             float offsetY = 0.0f;
 
+            // 【优化】加快滚动速度：3 秒滚完
             if (metrics.height > availableHeight && currentLineIdx >= 0 && currentLineIdx < (int)g_Lyrics.size()) {
                 double lineStart = g_Lyrics[currentLineIdx].time;
                 double elapsed = currentTime - lineStart;
-                if (elapsed > 2.0) {
+                if (elapsed > 1.5) {
                     float overflow = metrics.height - availableHeight;
-                    float scrollSpeed = overflow / 3.0f;
-                    offsetY = (float)(elapsed - 2.0) * scrollSpeed;
+                    float scrollSpeed = overflow / 3.0f; // 这里是修改点
+                    offsetY = (float)(elapsed - 1.5) * scrollSpeed;
                     if (offsetY > overflow) {
                         offsetY = overflow;
                     }
