@@ -20,6 +20,9 @@ extern int g_reload_flag;
 extern int g_panelDisplayMode;
 extern void SavePanelSettings();
 
+// 【第四处修改 1/2】引入桌面歌词的保存函数
+extern void SaveSettings(HWND hwnd);
+
 static const GUID guid_menu_group = { 0x77777777, 0x7777, 0x7777,{ 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77 } };
 static const GUID guid_menu_display = { 0x88888888, 0x8888, 0x8888,{ 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88 } };
 
@@ -173,6 +176,7 @@ public:
 
     GUID get_parent() override { return guid_menu_display; }
 
+    // 【第四处修改 2/2】加上保存桌面歌词设置的逻辑
     void execute(t_uint32 p_index, service_ptr_t<service_base> p_callback) override {
         // 同时设置桌面和面板的显示模式
         g_displayMode = (int)p_index;
@@ -180,7 +184,9 @@ public:
 
         SavePanelSettings(); // 保存面板设置，防止重启后回退
 
+        // 同步保存桌面歌词设置
         if (g_hwndLyrics) {
+            SaveSettings(g_hwndLyrics);
             InvalidateRect(g_hwndLyrics, NULL, TRUE);
         }
     }

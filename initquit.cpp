@@ -162,7 +162,7 @@ void LoadSettings(HWND hwnd) {
     HKEY hKey;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, REG_PATH, 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
         DWORD type, size;
-        int x = 100, y = 100, vis = 1, fs = 40, locked = 0, topmost = 1;
+        int x = 100, y = 100, vis = 1, fs = 40, locked = 0, topmost = 1, dm = 0;
         size = sizeof(int);
         RegQueryValueExW(hKey, L"X", NULL, &type, (LPBYTE)&x, &size);
         RegQueryValueExW(hKey, L"Y", NULL, &type, (LPBYTE)&y, &size);
@@ -170,11 +170,13 @@ void LoadSettings(HWND hwnd) {
         RegQueryValueExW(hKey, L"FontSize", NULL, &type, (LPBYTE)&fs, &size);
         RegQueryValueExW(hKey, L"Locked", NULL, &type, (LPBYTE)&locked, &size);
         RegQueryValueExW(hKey, L"Topmost", NULL, &type, (LPBYTE)&topmost, &size);
+        RegQueryValueExW(hKey, L"DisplayMode", NULL, &type, (LPBYTE)&dm, &size);
 
         g_isVisible = (vis == 1);
         g_fontSize = fs;
         g_isLocked = (locked == 1);
         g_isTopmost = (topmost == 1);
+        g_displayMode = dm;
 
         wchar_t fontBuf[256] = { 0 };
         size = sizeof(fontBuf);
@@ -218,6 +220,7 @@ void SaveSettings(HWND hwnd) {
         int fs = g_fontSize;
         int locked = g_isLocked ? 1 : 0;
         int topmost = g_isTopmost ? 1 : 0;
+        int dm = g_displayMode;
 
         RegSetValueExW(hKey, L"X", 0, REG_DWORD, (const BYTE*)&x, sizeof(int));
         RegSetValueExW(hKey, L"Y", 0, REG_DWORD, (const BYTE*)&y, sizeof(int));
@@ -225,6 +228,7 @@ void SaveSettings(HWND hwnd) {
         RegSetValueExW(hKey, L"FontSize", 0, REG_DWORD, (const BYTE*)&fs, sizeof(int));
         RegSetValueExW(hKey, L"Locked", 0, REG_DWORD, (const BYTE*)&locked, sizeof(int));
         RegSetValueExW(hKey, L"Topmost", 0, REG_DWORD, (const BYTE*)&topmost, sizeof(int));
+        RegSetValueExW(hKey, L"DisplayMode", 0, REG_DWORD, (const BYTE*)&dm, sizeof(int));
 
         RegSetValueExW(hKey, L"MongolFont", 0, REG_SZ, (const BYTE*)g_mongolFont.c_str(), (g_mongolFont.length() + 1) * sizeof(wchar_t));
         RegSetValueExW(hKey, L"ChineseFont", 0, REG_SZ, (const BYTE*)g_chineseFont.c_str(), (g_chineseFont.length() + 1) * sizeof(wchar_t));
@@ -368,6 +372,7 @@ void ParseLyrics(const pfc::string8& lyrics) {
         }
     }
 }
+
 void FetchLyricsNow(metadb_handle_ptr item) {
     pfc::string8 lyrics = "";
     if (item.is_valid()) {
@@ -708,6 +713,7 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         }
         else if (cmd >= 10 && cmd <= 12) {
             g_displayMode = cmd - 10;
+            SaveSettings(hwnd);
             InvalidateRect(hwnd, NULL, TRUE);
         }
         return 0;
@@ -841,28 +847,20 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 float startX = (width - metrics.width) / 2.0f;
                 float menkX = (width + metricsMenk.height) / 2.0f;
 
-                // === 严格区分排版情况 ===
                 if (hasMenk && pLayoutMenk) {
-                    // 只有纯蒙科立（没有标准蒙文，也没有中文）
                     if (displayMongolian.empty() && displayChinese.empty()) {
                         float totalWidth = metrics.width + metricsMenk.height;
-
-                        // 【这里就是你专门用来微调纯蒙科立左右位置的参数】
-                        // 正数往右移，负数往左移
                         float pureMenkOffsetX = 20.0f;
-
                         startX = (width - totalWidth) / 2.0f + pureMenkOffsetX;
                         if (startX < 10.0f) startX = 10.0f;
                         menkX = startX + metricsMenk.height;
                     }
-                    // 双语（中文 + 蒙科立，无标准蒙文）
                     else if (displayMongolian.empty()) {
                         float totalWidth = metrics.width + metricsMenk.height;
                         startX = (width - totalWidth) / 2.0f;
                         if (startX < 10.0f) startX = 10.0f;
                         menkX = startX + metricsMenk.height;
                     }
-                    // 含有标准蒙文的情况（标准蒙文 + 蒙科立，或 标准蒙文 + 蒙科立 + 中文）
                     else {
                         if (startX < 10.0f) startX = 10.0f;
                         menkX = startX + metrics.width;
