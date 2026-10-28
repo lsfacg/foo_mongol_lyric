@@ -10,6 +10,7 @@
 #include <d2d1.h>
 #include <d2d1helper.h>
 #include <dwrite.h>
+#include <dwrite_1.h>
 #include <vector>
 #include <string>
 #include <cmath>
@@ -96,6 +97,7 @@ void SavePanelSettings() {
 struct PanelLyricLine {
     double time;
     std::wstring mongolText;
+    std::wstring mongolMenkText;
     std::wstring chineseText;
 };
 
@@ -111,7 +113,7 @@ private:
     ID2D1SolidColorBrush* m_pChineseBrush;
     ID2D1SolidColorBrush* m_pHighlightMongolBrush;
     ID2D1SolidColorBrush* m_pHighlightChineseBrush;
-    ID2D1StrokeStyle* m_pDashedStrokeStyle; // 全屏虚线样式
+    ID2D1StrokeStyle* m_pDashedStrokeStyle;
     MongolPanelInstance* m_pParent;
     int m_lastFontSize;
     std::wstring m_lastMFont, m_lastCFont;
@@ -126,6 +128,7 @@ private:
     int m_lastRenderIdx;
     DWORD m_animStartTick;
     int m_lastReloadFlag;
+    bool m_isHovered = false; // 记录鼠标悬浮状态
 
 public:
     FullScreenLyric(MongolPanelInstance* parent);
@@ -146,6 +149,7 @@ public:
         MESSAGE_HANDLER(WM_CONTEXTMENU, OnContextMenu)
         MESSAGE_HANDLER(WM_DESTROY, OnDestroy)
         MESSAGE_HANDLER(WM_NCDESTROY, OnNcDestroy)
+        MESSAGE_HANDLER(WM_MOUSELEAVE, OnMouseLeave)
     END_MSG_MAP()
 
     void InitFullScreen();
@@ -161,6 +165,7 @@ public:
     LRESULT OnLButtonDblClk(UINT, WPARAM, LPARAM, BOOL&);
     LRESULT OnLButtonDown(UINT, WPARAM, LPARAM, BOOL&);
     LRESULT OnMouseMove(UINT, WPARAM, LPARAM, BOOL&);
+    LRESULT OnMouseLeave(UINT, WPARAM, LPARAM, BOOL&);
     LRESULT OnLButtonUp(UINT, WPARAM, LPARAM, BOOL&);
     LRESULT OnContextMenu(UINT, WPARAM, LPARAM, BOOL&);
     LRESULT OnPaint(UINT, WPARAM, LPARAM, BOOL&);
@@ -176,7 +181,7 @@ public:
     ID2D1SolidColorBrush* m_pChineseBrush = nullptr;
     ID2D1SolidColorBrush* m_pHighlightMongolBrush = nullptr;
     ID2D1SolidColorBrush* m_pHighlightChineseBrush = nullptr;
-    ID2D1StrokeStyle* m_pDashedStrokeStyle = nullptr; // 面板虚线样式
+    ID2D1StrokeStyle* m_pDashedStrokeStyle = nullptr;
 
     std::vector<PanelLyricLine> m_lyrics;
     FullScreenLyric* m_pFullScreen = nullptr;
@@ -197,6 +202,7 @@ private:
     float m_snapTargetIdx = 0.0f;
     int m_lastRenderIdx = -1;
     DWORD m_animStartTick = 0;
+    bool m_isHovered = false; // 记录鼠标悬浮状态
 
 public:
     void LoadLyricsForCurrentTrack();
@@ -222,6 +228,7 @@ public:
         MESSAGE_HANDLER(WM_LBUTTONDBLCLK, OnLButtonDblClk)
         MESSAGE_HANDLER(WM_MOUSEWHEEL, OnMouseWheel)
         MESSAGE_HANDLER(WM_CONTEXTMENU, OnContextMenu)
+        MESSAGE_HANDLER(WM_MOUSELEAVE, OnMouseLeave)
     END_MSG_MAP()
 
     static GUID g_get_guid() { return guid_mongol_lyric_panel; }
@@ -243,10 +250,14 @@ public:
     LRESULT OnLButtonDblClk(UINT, WPARAM, LPARAM, BOOL&);
     LRESULT OnLButtonDown(UINT, WPARAM, LPARAM, BOOL&);
     LRESULT OnMouseMove(UINT, WPARAM, LPARAM, BOOL&);
+    LRESULT OnMouseLeave(UINT, WPARAM, LPARAM, BOOL&);
     LRESULT OnLButtonUp(UINT, WPARAM, LPARAM, BOOL&);
     LRESULT OnSize(UINT, WPARAM, LPARAM, BOOL&);
     LRESULT OnPaint(UINT, WPARAM, LPARAM, BOOL&);
 };
+// ==========================================
+// 3. 全屏歌词类功能实现
+// ==========================================
 
 FullScreenLyric::FullScreenLyric(MongolPanelInstance* parent) :
     m_pD2DFactory(nullptr), m_pRenderTarget(nullptr), m_pDWriteFactory(nullptr), m_pMongolFormat(nullptr),
@@ -277,11 +288,14 @@ void FullScreenLyric::InitFullScreen() {
     m_lastCFont = g_panelChineseFont;
     float fs = (float)g_panelFontSize * 2.5f;
     m_pDWriteFactory->CreateTextFormat(g_panelMongolFont.c_str(), nullptr, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, fs, L"mn-MN", &m_pMongolFormat);
-    m_pMongolFormat->SetReadingDirection(DWRITE_READING_DIRECTION_TOP_TO_BOTTOM);
-    m_pMongolFormat->SetFlowDirection(DWRITE_FLOW_DIRECTION_LEFT_TO_RIGHT);
-    m_pMongolFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-    m_pMongolFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
-    m_pMongolFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP); // 取消自动换行
+
+    if (m_pMongolFormat) {
+        m_pMongolFormat->SetReadingDirection(DWRITE_READING_DIRECTION_TOP_TO_BOTTOM);
+        m_pMongolFormat->SetFlowDirection(DWRITE_FLOW_DIRECTION_LEFT_TO_RIGHT);
+        m_pMongolFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        m_pMongolFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+        m_pMongolFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    }
 
     D2D1_STROKE_STYLE_PROPERTIES strokeProps = D2D1::StrokeStyleProperties(
         D2D1_CAP_STYLE_FLAT, D2D1_CAP_STYLE_FLAT, D2D1_CAP_STYLE_FLAT,
@@ -315,11 +329,13 @@ LRESULT FullScreenLyric::OnTimer(UINT, WPARAM, LPARAM, BOOL&) {
         if (m_pMongolFormat) m_pMongolFormat->Release();
         float fs = (float)g_panelFontSize * 2.5f;
         m_pDWriteFactory->CreateTextFormat(g_panelMongolFont.c_str(), nullptr, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, fs, L"mn-MN", &m_pMongolFormat);
-        m_pMongolFormat->SetReadingDirection(DWRITE_READING_DIRECTION_TOP_TO_BOTTOM);
-        m_pMongolFormat->SetFlowDirection(DWRITE_FLOW_DIRECTION_LEFT_TO_RIGHT);
-        m_pMongolFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-        m_pMongolFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
-        m_pMongolFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        if (m_pMongolFormat) {
+            m_pMongolFormat->SetReadingDirection(DWRITE_READING_DIRECTION_TOP_TO_BOTTOM);
+            m_pMongolFormat->SetFlowDirection(DWRITE_FLOW_DIRECTION_LEFT_TO_RIGHT);
+            m_pMongolFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            m_pMongolFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+            m_pMongolFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        }
     }
     if (m_lastReloadFlag != g_reload_flag) { m_lastReloadFlag = g_reload_flag; m_lastRenderIdx = -1; }
     Invalidate(); return 0;
@@ -367,6 +383,16 @@ LRESULT FullScreenLyric::OnLButtonDown(UINT, WPARAM, LPARAM lParam, BOOL&) {
 }
 
 LRESULT FullScreenLyric::OnMouseMove(UINT, WPARAM, LPARAM lParam, BOOL&) {
+    // 追踪鼠标进入，准备触发遮罩
+    if (!m_isHovered) {
+        m_isHovered = true;
+        TRACKMOUSEEVENT tme = { sizeof(TRACKMOUSEEVENT) };
+        tme.dwFlags = TME_LEAVE;
+        tme.hwndTrack = m_hWnd;
+        TrackMouseEvent(&tme);
+        Invalidate();
+    }
+
     if (m_isMouseDown) {
         int mouseX = GET_X_LPARAM(lParam); int deltaX = mouseX - m_dragStartX;
         if (std::abs(deltaX) > 5) m_isActuallyDragging = true;
@@ -378,6 +404,12 @@ LRESULT FullScreenLyric::OnMouseMove(UINT, WPARAM, LPARAM lParam, BOOL&) {
             Invalidate();
         }
     }
+    return 0;
+}
+
+LRESULT FullScreenLyric::OnMouseLeave(UINT, WPARAM, LPARAM, BOOL&) {
+    m_isHovered = false;
+    Invalidate();
     return 0;
 }
 
@@ -437,6 +469,87 @@ LRESULT FullScreenLyric::OnContextMenu(UINT, WPARAM, LPARAM lParam, BOOL&) {
     Invalidate(); return 0;
 }
 
+// 歌词解析函数
+void MongolPanelInstance::LoadLyricsForCurrentTrack() {
+    m_lyrics.clear(); metadb_handle_ptr item; if (!playback_control::get()->get_now_playing(item)) return; pfc::string8 lyrics;
+    metadb_info_container::ptr info_ref = item->get_info_ref();
+    if (info_ref.is_valid()) {
+        const file_info& info = info_ref->info(); t_size count = info.meta_get_count();
+        for (t_size i = 0; i < count; i++) {
+            const char* name = info.meta_enum_name(i);
+            if (name && (_stricmp(name, "LYRICS") == 0 || _stricmp(name, "UNSYNCEDLYRICS") == 0 || _stricmp(name, "LYRIC") == 0 || _stricmp(name, "UNSYNCED LYRICS") == 0)) {
+                if (info.meta_enum_value_count(i) > 0) { lyrics = info.meta_enum_value(i, 0); break; }
+            }
+        }
+    }
+
+    if (lyrics.is_empty()) {
+        pfc::string8 filepath = item->get_path(); pfc::stringcvt::string_wide_from_utf8 widePath(filepath); std::wstring wpath = widePath.get_ptr();
+        if (wpath.find(L"file://") == 0) { wpath = wpath.substr(7); if (!wpath.empty() && wpath[0] == L'/') wpath = wpath.substr(1); }
+        for (wchar_t& c : wpath) { if (c == L'/') c = L'\\'; }
+        size_t dotPos = wpath.find_last_of(L'.');
+        if (dotPos != std::wstring::npos) {
+            std::wstring lrcPath = wpath.substr(0, dotPos) + L".lrc"; std::wstring LRCpath = wpath.substr(0, dotPos) + L".LRC";
+            HANDLE hFile = CreateFileW(lrcPath.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (hFile == INVALID_HANDLE_VALUE) hFile = CreateFileW(LRCpath.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (hFile != INVALID_HANDLE_VALUE) {
+                DWORD fileSize = GetFileSize(hFile, NULL);
+                if (fileSize > 0 && fileSize < 10 * 1024 * 1024) {
+                    char* buffer = new char[fileSize + 1]; DWORD bytesRead = 0;
+                    if (ReadFile(hFile, buffer, fileSize, &bytesRead, NULL)) {
+                        buffer[fileSize] = '\0';
+                        if (fileSize >= 3 && (unsigned char)buffer[0] == 0xEF && (unsigned char)buffer[1] == 0xBB && (unsigned char)buffer[2] == 0xBF) { lyrics = buffer + 3; }
+                        else { lyrics = buffer; }
+                    }
+                    delete[] buffer;
+                }
+                CloseHandle(hFile);
+            }
+        }
+    }
+
+    if (!lyrics.is_empty()) {
+        std::string content = lyrics.get_ptr(); size_t pos = 0;
+        while (pos < content.length()) {
+            size_t lineEnd = content.find('\n', pos); if (lineEnd == std::string::npos) lineEnd = content.length();
+            std::string line = content.substr(pos, lineEnd - pos); pos = lineEnd + 1; if (!line.empty() && line.back() == '\r') line.pop_back();
+            size_t bracketPos = line.find('['); if (bracketPos == std::string::npos) continue; line = line.substr(bracketPos);
+            if (line.length() > 2 && line[0] == '[') {
+                size_t closeBracket = line.find(']');
+                if (closeBracket != std::string::npos) {
+                    std::string timeStr = line.substr(1, closeBracket - 1); std::string text = line.substr(closeBracket + 1); int min = 0, sec = 0, ms = 0;
+                    if (sscanf_s(timeStr.c_str(), "%d:%d.%d", &min, &sec, &ms) >= 2) {
+                        size_t dot = timeStr.find('.'); int msDigits = 2; if (dot != std::string::npos) msDigits = (int)(timeStr.length() - dot - 1); double msFactor = (msDigits == 3) ? 1000.0 : 100.0; double totalSeconds = min * 60.0 + sec + (ms / msFactor);
+                        pfc::stringcvt::string_wide_from_utf8 wideText(text.c_str()); std::wstring wText = wideText.get_ptr(); size_t first = wText.find_first_not_of(L" ");
+                        if (first != std::wstring::npos) {
+                            size_t last = wText.find_last_not_of(L" "); wText = wText.substr(first, (last - first + 1));
+                            if (!wText.empty()) {
+                                bool hasMongol = false; bool hasMenk = false;
+                                for (wchar_t c : wText) {
+                                    if (c >= 0x1800 && c <= 0x18AF) hasMongol = true;
+                                    else if (c >= 0xE000 && c <= 0xF8FF) hasMenk = true;
+                                }
+                                if (!m_lyrics.empty() && abs(m_lyrics.back().time - totalSeconds) < 1.5) {
+                                    if (hasMongol && m_lyrics.back().mongolText.empty()) m_lyrics.back().mongolText = wText;
+                                    else if (hasMenk && m_lyrics.back().mongolMenkText.empty()) m_lyrics.back().mongolMenkText = wText;
+                                    else if (!hasMongol && !hasMenk && m_lyrics.back().chineseText.empty()) m_lyrics.back().chineseText = wText;
+                                    else { PanelLyricLine nl = { totalSeconds, L"", L"", L"" }; if (hasMongol) nl.mongolText = wText; else if (hasMenk) nl.mongolMenkText = wText; else nl.chineseText = wText; m_lyrics.push_back(nl); }
+                                }
+                                else { PanelLyricLine nl = { totalSeconds, L"", L"", L"" }; if (hasMongol) nl.mongolText = wText; else if (hasMenk) nl.mongolMenkText = wText; else nl.chineseText = wText; m_lyrics.push_back(nl); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+// ==========================================
+// 4. 全屏歌词核心绘制逻辑
+// ==========================================
+// ==========================================
+// 4. 全屏歌词核心绘制逻辑
+// ==========================================
 LRESULT FullScreenLyric::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
     PAINTSTRUCT ps; HDC hdc = BeginPaint(&ps);
     if (!m_pRenderTarget) {
@@ -465,13 +578,7 @@ LRESULT FullScreenLyric::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
             float visualOffsetX = width * -0.1f; float centerX = width / 2.0f + visualOffsetX; float startY = height / 2.0f - 450.0f; float step = (float)g_panelFontSize * 8.0f; float virtualIdx = 0.0f;
 
             if (m_isActuallyDragging || m_isSnapping) {
-                m_pRenderTarget->DrawLine(
-                    D2D1::Point2F(centerX, 0.0f),
-                    D2D1::Point2F(centerX, height),
-                    m_pHighlightMongolBrush,
-                    2.0f,
-                    m_pDashedStrokeStyle
-                );
+                m_pRenderTarget->DrawLine(D2D1::Point2F(centerX, 0.0f), D2D1::Point2F(centerX, height), m_pHighlightMongolBrush, 2.0f, m_pDashedStrokeStyle);
             }
 
             if (renderLyrics.size() == 1) { virtualIdx = 0.0f; }
@@ -496,62 +603,125 @@ LRESULT FullScreenLyric::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
                 int startIdx = highlightIdx > 8 ? highlightIdx - 8 : 0;
                 int endIdx = highlightIdx + 15 < (int)renderLyrics.size() ? highlightIdx + 15 : (int)renderLyrics.size() - 1;
 
+                // 【修复】强制从屏幕顶端 90 像素处开始裁切，让字滚上去直接消失
+                D2D1_RECT_F clipRect = D2D1::RectF(0.0f, 90.0f, width, 5000.0f);
+                m_pRenderTarget->PushAxisAlignedClip(clipRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
                 for (int i = startIdx; i <= endIdx; i++) {
-                    std::wstring mText = renderLyrics[i].mongolText; std::wstring cText = renderLyrics[i].chineseText; if (g_panelDisplayMode == 1) cText.clear(); if (g_panelDisplayMode == 2) mText.clear(); if (mText.empty() && cText.empty()) continue;
-                    std::wstring fullText; std::vector<DWRITE_TEXT_RANGE> spaceRanges; UINT32 mongEnd = 0; UINT32 chStart = 0; UINT32 chLen = 0;
-                    if (!mText.empty()) { fullText += mText; mongEnd = (UINT32)fullText.length(); }
-                    if (!mText.empty() && !cText.empty()) { fullText += L"\n"; chStart = (UINT32)fullText.length(); for (size_t j = 0; j < cText.length(); ++j) { fullText += cText[j]; if (j < cText.length() - 1) { spaceRanges.push_back({ (UINT32)fullText.length(), 1 }); fullText += L" "; } } chLen = (UINT32)fullText.length() - chStart; }
-                    else if (mText.empty() && !cText.empty()) { chStart = 0; for (size_t j = 0; j < cText.length(); ++j) { fullText += cText[j]; if (j < cText.length() - 1) { spaceRanges.push_back({ (UINT32)fullText.length(), 1 }); fullText += L" "; } } chLen = (UINT32)fullText.length(); }
-                    if (fullText.empty()) continue;
+                    std::wstring mText = renderLyrics[i].mongolText;
+                    std::wstring menkText = renderLyrics[i].mongolMenkText;
+                    std::wstring cText = renderLyrics[i].chineseText;
+
+                    if (g_panelDisplayMode == 1) cText.clear();
+                    if (g_panelDisplayMode == 2) { mText.clear(); menkText.clear(); }
+                    if (mText.empty() && menkText.empty() && cText.empty()) continue;
+
+                    std::wstring fullText = mText;
+                    if (!mText.empty() && !cText.empty()) { fullText += L"\n"; }
+                    std::vector<DWRITE_TEXT_RANGE> spaceRanges;
+                    if (!cText.empty()) {
+                        for (size_t j = 0; j < cText.length(); ++j) { fullText += cText[j]; if (j < cText.length() - 1) { spaceRanges.push_back({ (UINT32)fullText.length(), 1 }); fullText += L" "; } }
+                    }
+
+                    float totalW = 0.0f;
+                    float lineOffset = (i - virtualIdx) * step;
+                    float currentCenterX = centerX + lineOffset;
+
                     IDWriteTextLayout* pLayout = nullptr;
+                    if (!fullText.empty()) {
+                        m_pDWriteFactory->CreateTextLayout(fullText.c_str(), (UINT32)fullText.length(), m_pMongolFormat, 5000.0f, 5000.0f, &pLayout);
+                    }
 
-                    m_pDWriteFactory->CreateTextLayout(fullText.c_str(), (UINT32)fullText.length(), m_pMongolFormat, 5000.0f, 5000.0f, &pLayout);
+                    IDWriteTextFormat* pMenkFormat = nullptr;
+                    IDWriteTextLayout* pLayoutMenk = nullptr;
+                    DWRITE_TEXT_METRICS metricsMenk = { 0 };
+                    bool hasMenk = !menkText.empty();
 
+                    if (hasMenk) {
+                        m_pDWriteFactory->CreateTextFormat(g_panelMongolFont.c_str(), nullptr, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, (float)g_panelFontSize * 2.5f, L"", &pMenkFormat);
+                        if (pMenkFormat) {
+                            pMenkFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                            m_pDWriteFactory->CreateTextLayout(menkText.c_str(), (UINT32)menkText.length(), pMenkFormat, 5000.0f, 5000.0f, &pLayoutMenk);
+                            if (pLayoutMenk) pLayoutMenk->GetMetrics(&metricsMenk);
+                        }
+                    }
+
+                    DWRITE_TEXT_METRICS metrics = { 0 };
                     if (pLayout) {
-                        if (!mText.empty()) { DWRITE_TEXT_RANGE rangeM = { 0, mongEnd }; pLayout->SetFontFamilyName(g_panelMongolFont.c_str(), rangeM); pLayout->SetDrawingEffect((i == highlightIdx) ? m_pHighlightMongolBrush : m_pMongolBrush, rangeM); }
-                        if (!mText.empty() && !cText.empty()) { DWRITE_TEXT_RANGE rangeNewline = { mongEnd, 1 }; pLayout->SetFontSize(1.0f, rangeNewline); pLayout->SetDrawingEffect((i == highlightIdx) ? m_pHighlightMongolBrush : m_pMongolBrush, rangeNewline); DWRITE_TEXT_RANGE rangeC = { chStart, chLen }; pLayout->SetFontFamilyName(g_panelChineseFont.c_str(), rangeC); pLayout->SetFontWeight(DWRITE_FONT_WEIGHT_NORMAL, rangeC); pLayout->SetDrawingEffect((i == highlightIdx) ? m_pHighlightChineseBrush : m_pChineseBrush, rangeC); }
-                        else if (mText.empty() && !cText.empty()) { DWRITE_TEXT_RANGE rangeC = { 0, chLen }; pLayout->SetFontFamilyName(g_panelChineseFont.c_str(), rangeC); pLayout->SetFontWeight(DWRITE_FONT_WEIGHT_NORMAL, rangeC); pLayout->SetDrawingEffect((i == highlightIdx) ? m_pHighlightChineseBrush : m_pChineseBrush, rangeC); }
+                        if (!mText.empty()) { DWRITE_TEXT_RANGE rangeM = { 0, (UINT32)mText.length() }; pLayout->SetFontFamilyName(g_panelMongolFont.c_str(), rangeM); pLayout->SetDrawingEffect((i == highlightIdx) ? m_pHighlightMongolBrush : m_pMongolBrush, rangeM); }
+                        if (!mText.empty() && !cText.empty()) { DWRITE_TEXT_RANGE rangeNewline = { (UINT32)mText.length(), 1 }; pLayout->SetFontSize(1.0f, rangeNewline); pLayout->SetDrawingEffect((i == highlightIdx) ? m_pHighlightMongolBrush : m_pMongolBrush, rangeNewline); }
+                        if (!cText.empty()) {
+                            UINT32 chStart = (!mText.empty()) ? (UINT32)mText.length() + 1 : 0;
+                            DWRITE_TEXT_RANGE rangeC = { chStart, (UINT32)fullText.length() - chStart };
+                            pLayout->SetFontFamilyName(g_panelChineseFont.c_str(), rangeC);
+                            pLayout->SetFontWeight(DWRITE_FONT_WEIGHT_NORMAL, rangeC);
+                            pLayout->SetDrawingEffect((i == highlightIdx) ? m_pHighlightChineseBrush : m_pChineseBrush, rangeC);
+                        }
                         for (const auto& r : spaceRanges) { pLayout->SetFontSize(7.0f, r); }
-
-                        DWRITE_TEXT_METRICS metrics;
                         pLayout->GetMetrics(&metrics);
-                        float totalW = metrics.width;
-                        float lineOffset = (i - virtualIdx) * step;
-                        float currentCenterX = centerX + lineOffset;
-                        float startX = currentCenterX - totalW / 2.0f;
+                        totalW = metrics.width;
+                    }
 
-                        // === 全屏滚动 ===
-                        float availableHeight = height - startY - 100.0f;
-                        float offsetY = 0.0f;
-                        if (i == highlightIdx && metrics.height > availableHeight) {
+                    float startX = 0.0f;
+                    float drawX = 0.0f;
+                    float menkX = 0.0f;
+
+                    if (hasMenk && pLayoutMenk) {
+                        if (mText.empty()) {
+                            float combinedWidth = totalW + metricsMenk.height;
+                            float leftMost = currentCenterX - combinedWidth / 2.0f;
+                            menkX = leftMost + metricsMenk.height;
+                            drawX = menkX;
+                        }
+                        else {
+                            startX = currentCenterX - totalW / 2.0f;
+                            menkX = startX + totalW;
+                            drawX = startX;
+                        }
+                    }
+                    else {
+                        startX = currentCenterX - totalW / 2.0f;
+                        drawX = startX;
+                    }
+
+                    float availableHeight = height - startY - 200.0f;
+                    float offsetY = 0.0f;
+
+                    if (i == highlightIdx) {
+                        float overflowCn = metrics.height - availableHeight;
+                        float overflowMenk = (hasMenk && pLayoutMenk) ? (metricsMenk.width - availableHeight) : 0.0f;
+                        float maxOverflow = (std::max)(overflowCn, overflowMenk);
+
+                        if (maxOverflow > 0.0f) {
                             double elapsed = currentTime - renderLyrics[i].time;
-
-                            // 【核心修复】如果正在拖动或吸附，强制从头开始显示
                             if (m_isActuallyDragging || m_isSnapping) elapsed = 0.0;
-
                             if (elapsed > 0.5) {
-                                float overflow = metrics.height - availableHeight + 30.0f;
-                                float scrollSpeed = overflow / 3.5f; // 放慢到 3.5 秒
+                                float totalOverflow = maxOverflow + 100.0f;
+                                float scrollSpeed = totalOverflow / 3.5f;
                                 offsetY = (float)(elapsed - 0.5) * scrollSpeed;
-                                if (offsetY > overflow) offsetY = overflow;
+                                if (offsetY > totalOverflow) offsetY = totalOverflow;
                             }
                         }
-
-                        bool needClip = (offsetY > 0.0f);
-                        if (needClip) {
-                            D2D1_RECT_F clipRect = D2D1::RectF(0.0f, startY, width, height);
-                            m_pRenderTarget->PushAxisAlignedClip(clipRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-                        }
-
-                        m_pRenderTarget->DrawTextLayout(D2D1::Point2F(startX, startY - offsetY), pLayout, m_pMongolBrush);
-
-                        if (needClip) {
-                            m_pRenderTarget->PopAxisAlignedClip();
-                        }
-
-                        pLayout->Release();
                     }
+
+                    if (pLayout) {
+                        m_pRenderTarget->DrawTextLayout(D2D1::Point2F(drawX, startY - offsetY), pLayout, m_pMongolBrush);
+                    }
+
+                    if (hasMenk && pLayoutMenk) {
+                        D2D1::Matrix3x2F oldTransform;
+                        m_pRenderTarget->GetTransform(&oldTransform);
+                        D2D1::Matrix3x2F transform = D2D1::Matrix3x2F::Rotation(90.0f) * D2D1::Matrix3x2F::Translation(menkX, startY - offsetY);
+                        m_pRenderTarget->SetTransform(transform * oldTransform);
+                        m_pRenderTarget->DrawTextLayout(D2D1::Point2F(0.0f, 0.0f), pLayoutMenk, (i == highlightIdx) ? m_pHighlightMongolBrush : m_pMongolBrush);
+                        m_pRenderTarget->SetTransform(oldTransform);
+                    }
+
+                    if (pLayout) pLayout->Release();
+                    if (pLayoutMenk) pLayoutMenk->Release();
+                    if (pMenkFormat) pMenkFormat->Release();
                 }
+                m_pRenderTarget->PopAxisAlignedClip();
             }
         }
         m_pRenderTarget->EndDraw();
@@ -559,64 +729,9 @@ LRESULT FullScreenLyric::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
     EndPaint(&ps); return 0;
 }
 
-void MongolPanelInstance::LoadLyricsForCurrentTrack() {
-    m_lyrics.clear(); metadb_handle_ptr item; if (!playback_control::get()->get_now_playing(item)) return; pfc::string8 lyrics;
-    metadb_info_container::ptr info_ref = item->get_info_ref();
-    if (info_ref.is_valid()) {
-        const file_info& info = info_ref->info(); t_size count = info.meta_get_count();
-        for (t_size i = 0; i < count; i++) { const char* name = info.meta_enum_name(i); if (name && (_stricmp(name, "LYRICS") == 0 || _stricmp(name, "UNSYNCEDLYRICS") == 0 || _stricmp(name, "LYRIC") == 0 || _stricmp(name, "UNSYNCED LYRICS") == 0)) { if (info.meta_enum_value_count(i) > 0) { lyrics = info.meta_enum_value(i, 0); break; } } }
-    }
-    if (lyrics.is_empty()) {
-        pfc::string8 filepath = item->get_path(); pfc::stringcvt::string_wide_from_utf8 widePath(filepath); std::wstring wpath = widePath.get_ptr();
-        if (wpath.find(L"file://") == 0) { wpath = wpath.substr(7); if (!wpath.empty() && wpath[0] == L'/') wpath = wpath.substr(1); }
-        for (wchar_t& c : wpath) { if (c == L'/') c = L'\\'; }
-        size_t dotPos = wpath.find_last_of(L'.');
-        if (dotPos != std::wstring::npos) {
-            std::wstring lrcPath = wpath.substr(0, dotPos) + L".lrc"; std::wstring LRCpath = wpath.substr(0, dotPos) + L".LRC";
-            HANDLE hFile = CreateFileW(lrcPath.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-            if (hFile == INVALID_HANDLE_VALUE) hFile = CreateFileW(LRCpath.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-            if (hFile != INVALID_HANDLE_VALUE) {
-                DWORD fileSize = GetFileSize(hFile, NULL);
-                if (fileSize > 0 && fileSize < 10 * 1024 * 1024) {
-                    char* buffer = new char[fileSize + 1]; DWORD bytesRead = 0;
-                    if (ReadFile(hFile, buffer, fileSize, &bytesRead, NULL)) { buffer[fileSize] = '\0'; if (fileSize >= 3 && (unsigned char)buffer[0] == 0xEF && (unsigned char)buffer[1] == 0xBB && (unsigned char)buffer[2] == 0xBF) { lyrics = buffer + 3; } else { lyrics = buffer; } }
-                    delete[] buffer;
-                }
-                CloseHandle(hFile);
-            }
-        }
-    }
-    if (!lyrics.is_empty()) {
-        std::string content = lyrics.get_ptr(); size_t pos = 0;
-        while (pos < content.length()) {
-            size_t lineEnd = content.find('\n', pos); if (lineEnd == std::string::npos) lineEnd = content.length();
-            std::string line = content.substr(pos, lineEnd - pos); pos = lineEnd + 1; if (!line.empty() && line.back() == '\r') line.pop_back();
-            size_t bracketPos = line.find('['); if (bracketPos == std::string::npos) continue; line = line.substr(bracketPos);
-            if (line.length() > 2 && line[0] == '[') {
-                size_t closeBracket = line.find(']');
-                if (closeBracket != std::string::npos) {
-                    std::string timeStr = line.substr(1, closeBracket - 1); std::string text = line.substr(closeBracket + 1); int min = 0, sec = 0, ms = 0;
-                    if (sscanf_s(timeStr.c_str(), "%d:%d.%d", &min, &sec, &ms) >= 2) {
-                        size_t dot = timeStr.find('.'); int msDigits = 2; if (dot != std::string::npos) msDigits = (int)(timeStr.length() - dot - 1); double msFactor = (msDigits == 3) ? 1000.0 : 100.0; double totalSeconds = min * 60.0 + sec + (ms / msFactor);
-                        pfc::stringcvt::string_wide_from_utf8 wideText(text.c_str()); std::wstring wText = wideText.get_ptr(); size_t first = wText.find_first_not_of(L" ");
-                        if (first != std::wstring::npos) {
-                            size_t last = wText.find_last_not_of(L" "); wText = wText.substr(first, (last - first + 1));
-                            if (!wText.empty()) {
-                                bool hasMongol = false; for (wchar_t c : wText) { if (c >= 0x1800 && c <= 0x18AF) { hasMongol = true; break; } }
-                                if (!m_lyrics.empty() && abs(m_lyrics.back().time - totalSeconds) < 1.5) {
-                                    if (hasMongol && m_lyrics.back().mongolText.empty()) m_lyrics.back().mongolText = wText; else if (!hasMongol && m_lyrics.back().chineseText.empty()) m_lyrics.back().chineseText = wText;
-                                    else { PanelLyricLine nl = { totalSeconds, L"", L"" }; if (hasMongol) nl.mongolText = wText; else nl.chineseText = wText; m_lyrics.push_back(nl); }
-                                }
-                                else { PanelLyricLine nl = { totalSeconds, L"", L"" }; if (hasMongol) nl.mongolText = wText; else nl.chineseText = wText; m_lyrics.push_back(nl); }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
+// ==========================================
+// 5. 面板歌词类基础成员与交互逻辑
+// ==========================================
 void MongolPanelInstance::ReloadLyrics() { LoadLyricsForCurrentTrack(); m_lastRenderIdx = -1; Invalidate(); }
 void MongolPanelInstance::OnFullScreenClosed() { m_pFullScreen = nullptr; }
 void MongolPanelInstance::OpenFullScreen() { if (m_pFullScreen) return; m_pFullScreen = new FullScreenLyric(this); m_pFullScreen->InitFullScreen(); }
@@ -627,11 +742,13 @@ MongolPanelInstance::MongolPanelInstance(ui_element_config::ptr cfg, ui_element_
     DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), reinterpret_cast<IUnknown**>(&m_pDWriteFactory));
     m_lastFontSize = g_panelFontSize; m_lastMFont = g_panelMongolFont; m_lastCFont = g_panelChineseFont;
     m_pDWriteFactory->CreateTextFormat(g_panelMongolFont.c_str(), nullptr, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, (float)g_panelFontSize, L"mn-MN", &m_pMongolFormat);
-    m_pMongolFormat->SetReadingDirection(DWRITE_READING_DIRECTION_TOP_TO_BOTTOM);
-    m_pMongolFormat->SetFlowDirection(DWRITE_FLOW_DIRECTION_LEFT_TO_RIGHT);
-    m_pMongolFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-    m_pMongolFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
-    m_pMongolFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    if (m_pMongolFormat) {
+        m_pMongolFormat->SetReadingDirection(DWRITE_READING_DIRECTION_TOP_TO_BOTTOM);
+        m_pMongolFormat->SetFlowDirection(DWRITE_FLOW_DIRECTION_LEFT_TO_RIGHT);
+        m_pMongolFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        m_pMongolFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+        m_pMongolFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    }
 
     D2D1_STROKE_STYLE_PROPERTIES strokeProps = D2D1::StrokeStyleProperties(
         D2D1_CAP_STYLE_FLAT, D2D1_CAP_STYLE_FLAT, D2D1_CAP_STYLE_FLAT,
@@ -707,11 +824,13 @@ LRESULT MongolPanelInstance::OnTimer(UINT, WPARAM, LPARAM, BOOL&) {
         m_lastFontSize = g_panelFontSize; m_lastMFont = g_panelMongolFont; m_lastCFont = g_panelChineseFont;
         if (m_pMongolFormat) m_pMongolFormat->Release();
         m_pDWriteFactory->CreateTextFormat(g_panelMongolFont.c_str(), nullptr, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, (float)g_panelFontSize, L"mn-MN", &m_pMongolFormat);
-        m_pMongolFormat->SetReadingDirection(DWRITE_READING_DIRECTION_TOP_TO_BOTTOM);
-        m_pMongolFormat->SetFlowDirection(DWRITE_FLOW_DIRECTION_LEFT_TO_RIGHT);
-        m_pMongolFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-        m_pMongolFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
-        m_pMongolFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        if (m_pMongolFormat) {
+            m_pMongolFormat->SetReadingDirection(DWRITE_READING_DIRECTION_TOP_TO_BOTTOM);
+            m_pMongolFormat->SetFlowDirection(DWRITE_FLOW_DIRECTION_LEFT_TO_RIGHT);
+            m_pMongolFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            m_pMongolFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+            m_pMongolFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        }
     }
     if (m_lastReloadFlag != g_reload_flag) { m_lastReloadFlag = g_reload_flag; ReloadLyrics(); }
     metadb_handle_ptr item; std::wstring currentPath = L"";
@@ -739,6 +858,16 @@ LRESULT MongolPanelInstance::OnLButtonDown(UINT, WPARAM, LPARAM lParam, BOOL&) {
 }
 
 LRESULT MongolPanelInstance::OnMouseMove(UINT, WPARAM, LPARAM lParam, BOOL&) {
+    // 追踪鼠标进入，准备触发遮罩
+    if (!m_isHovered) {
+        m_isHovered = true;
+        TRACKMOUSEEVENT tme = { sizeof(TRACKMOUSEEVENT) };
+        tme.dwFlags = TME_LEAVE;
+        tme.hwndTrack = m_hWnd;
+        TrackMouseEvent(&tme);
+        Invalidate();
+    }
+
     if (m_isMouseDown) {
         int mouseX = GET_X_LPARAM(lParam); int deltaX = mouseX - m_dragStartX;
         if (std::abs(deltaX) > 5) m_isActuallyDragging = true;
@@ -750,6 +879,12 @@ LRESULT MongolPanelInstance::OnMouseMove(UINT, WPARAM, LPARAM lParam, BOOL&) {
             Invalidate();
         }
     }
+    return 0;
+}
+
+LRESULT MongolPanelInstance::OnMouseLeave(UINT, WPARAM, LPARAM, BOOL&) {
+    m_isHovered = false;
+    Invalidate();
     return 0;
 }
 
@@ -777,6 +912,12 @@ LRESULT MongolPanelInstance::OnSize(UINT, WPARAM, LPARAM, BOOL&) {
     return 0;
 }
 
+// ==========================================
+// 6. 面板歌词核心绘制逻辑
+// ==========================================
+// ==========================================
+// 6. 面板歌词核心绘制逻辑
+// ==========================================
 LRESULT MongolPanelInstance::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
     PAINTSTRUCT ps;
     HDC hdc = BeginPaint(&ps);
@@ -803,6 +944,7 @@ LRESULT MongolPanelInstance::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
         RECT rc; GetClientRect(&rc);
         float width = (float)rc.right;
         float height = (float)rc.bottom;
+        float panelStartY = 15.0f; // 稍微下移一点点
 
         std::vector<PanelLyricLine> renderLyrics; int currentIdx = -1; double currentTime = playback_control::get()->playback_get_position(); if (currentTime < 0) currentTime = 0;
         if (m_lyrics.empty()) {
@@ -818,13 +960,7 @@ LRESULT MongolPanelInstance::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
             float visualOffsetX = width * -0.075f; float centerX = width / 2.0f + visualOffsetX; float virtualIdx = 0.0f;
 
             if (m_isActuallyDragging || m_isSnapping) {
-                m_pRenderTarget->DrawLine(
-                    D2D1::Point2F(centerX, 0.0f),
-                    D2D1::Point2F(centerX, height),
-                    m_pHighlightMongolBrush,
-                    1.0f,
-                    m_pDashedStrokeStyle
-                );
+                m_pRenderTarget->DrawLine(D2D1::Point2F(centerX, 0.0f), D2D1::Point2F(centerX, height), m_pHighlightMongolBrush, 1.0f, m_pDashedStrokeStyle);
             }
 
             if (renderLyrics.size() == 1) { virtualIdx = 0.0f; }
@@ -850,63 +986,125 @@ LRESULT MongolPanelInstance::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
                 int endIdx = highlightIdx + 15 < (int)renderLyrics.size() ? highlightIdx + 15 : (int)renderLyrics.size() - 1;
                 float step = (float)g_panelFontSize * 4.0f;
 
+                D2D1_RECT_F clipRect = D2D1::RectF(0.0f, panelStartY, width, height);
+                m_pRenderTarget->PushAxisAlignedClip(clipRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
                 for (int i = startIdx; i <= endIdx; i++) {
-                    std::wstring mText = renderLyrics[i].mongolText; std::wstring cText = renderLyrics[i].chineseText; if (g_panelDisplayMode == 1) cText.clear(); if (g_panelDisplayMode == 2) mText.clear(); if (mText.empty() && cText.empty()) continue;
-                    std::wstring fullText; std::vector<DWRITE_TEXT_RANGE> spaceRanges; UINT32 mongEnd = 0; UINT32 chStart = 0; UINT32 chLen = 0;
-                    if (!mText.empty()) { fullText += mText; mongEnd = (UINT32)fullText.length(); }
-                    if (!mText.empty() && !cText.empty()) { fullText += L"\n"; chStart = (UINT32)fullText.length(); for (size_t j = 0; j < cText.length(); ++j) { fullText += cText[j]; if (j < cText.length() - 1) { spaceRanges.push_back({ (UINT32)fullText.length(), 1 }); fullText += L" "; } } chLen = (UINT32)fullText.length() - chStart; }
-                    else if (mText.empty() && !cText.empty()) { chStart = 0; for (size_t j = 0; j < cText.length(); ++j) { fullText += cText[j]; if (j < cText.length() - 1) { spaceRanges.push_back({ (UINT32)fullText.length(), 1 }); fullText += L" "; } } chLen = (UINT32)fullText.length(); }
-                    if (fullText.empty()) continue;
+                    std::wstring mText = renderLyrics[i].mongolText;
+                    std::wstring menkText = renderLyrics[i].mongolMenkText;
+                    std::wstring cText = renderLyrics[i].chineseText;
+
+                    if (g_panelDisplayMode == 1) cText.clear();
+                    if (g_panelDisplayMode == 2) { mText.clear(); menkText.clear(); }
+                    if (mText.empty() && menkText.empty() && cText.empty()) continue;
+
+                    std::wstring fullText = mText;
+                    if (!mText.empty() && !cText.empty()) { fullText += L"\n"; }
+                    std::vector<DWRITE_TEXT_RANGE> spaceRanges;
+                    if (!cText.empty()) {
+                        for (size_t j = 0; j < cText.length(); ++j) { fullText += cText[j]; if (j < cText.length() - 1) { spaceRanges.push_back({ (UINT32)fullText.length(), 1 }); fullText += L" "; } }
+                    }
+
+                    float totalW = 0.0f;
+                    float lineOffset = (i - virtualIdx) * step;
+                    float currentCenterX = centerX + lineOffset;
+                    float startY = panelStartY;
+                    float availableHeight = height - startY - 65.0f;
+
                     IDWriteTextLayout* pLayout = nullptr;
+                    if (!fullText.empty()) {
+                        m_pDWriteFactory->CreateTextLayout(fullText.c_str(), (UINT32)fullText.length(), m_pMongolFormat, 5000.0f, 5000.0f, &pLayout);
+                    }
 
-                    m_pDWriteFactory->CreateTextLayout(fullText.c_str(), (UINT32)fullText.length(), m_pMongolFormat, 5000.0f, 5000.0f, &pLayout);
+                    IDWriteTextFormat* pMenkFormat = nullptr;
+                    IDWriteTextLayout* pLayoutMenk = nullptr;
+                    DWRITE_TEXT_METRICS metricsMenk = { 0 };
+                    bool hasMenk = !menkText.empty();
 
+                    if (hasMenk) {
+                        m_pDWriteFactory->CreateTextFormat(g_panelMongolFont.c_str(), nullptr, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, (float)g_panelFontSize, L"", &pMenkFormat);
+                        if (pMenkFormat) {
+                            pMenkFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                            m_pDWriteFactory->CreateTextLayout(menkText.c_str(), (UINT32)menkText.length(), pMenkFormat, 5000.0f, 5000.0f, &pLayoutMenk);
+                            if (pLayoutMenk) pLayoutMenk->GetMetrics(&metricsMenk);
+                        }
+                    }
+
+                    DWRITE_TEXT_METRICS metrics = { 0 };
                     if (pLayout) {
-                        if (!mText.empty()) { DWRITE_TEXT_RANGE rangeM = { 0, mongEnd }; pLayout->SetFontFamilyName(g_panelMongolFont.c_str(), rangeM); pLayout->SetDrawingEffect((i == highlightIdx) ? m_pHighlightMongolBrush : m_pMongolBrush, rangeM); }
-                        if (!mText.empty() && !cText.empty()) { DWRITE_TEXT_RANGE rangeNewline = { mongEnd, 1 }; pLayout->SetFontSize(1.0f, rangeNewline); pLayout->SetDrawingEffect((i == highlightIdx) ? m_pHighlightMongolBrush : m_pMongolBrush, rangeNewline); DWRITE_TEXT_RANGE rangeC = { chStart, chLen }; pLayout->SetFontFamilyName(g_panelChineseFont.c_str(), rangeC); pLayout->SetFontWeight(DWRITE_FONT_WEIGHT_NORMAL, rangeC); pLayout->SetDrawingEffect((i == highlightIdx) ? m_pHighlightChineseBrush : m_pChineseBrush, rangeC); }
-                        else if (mText.empty() && !cText.empty()) { DWRITE_TEXT_RANGE rangeC = { 0, chLen }; pLayout->SetFontFamilyName(g_panelChineseFont.c_str(), rangeC); pLayout->SetFontWeight(DWRITE_FONT_WEIGHT_NORMAL, rangeC); pLayout->SetDrawingEffect((i == highlightIdx) ? m_pHighlightChineseBrush : m_pChineseBrush, rangeC); }
+                        if (!mText.empty()) { DWRITE_TEXT_RANGE rangeM = { 0, (UINT32)mText.length() }; pLayout->SetFontFamilyName(g_panelMongolFont.c_str(), rangeM); pLayout->SetDrawingEffect((i == highlightIdx) ? m_pHighlightMongolBrush : m_pMongolBrush, rangeM); }
+                        if (!mText.empty() && !cText.empty()) { DWRITE_TEXT_RANGE rangeNewline = { (UINT32)mText.length(), 1 }; pLayout->SetFontSize(1.0f, rangeNewline); pLayout->SetDrawingEffect((i == highlightIdx) ? m_pHighlightMongolBrush : m_pMongolBrush, rangeNewline); }
+                        if (!cText.empty()) {
+                            UINT32 chStart = (!mText.empty()) ? (UINT32)mText.length() + 1 : 0;
+                            DWRITE_TEXT_RANGE rangeC = { chStart, (UINT32)fullText.length() - chStart };
+                            pLayout->SetFontFamilyName(g_panelChineseFont.c_str(), rangeC);
+                            pLayout->SetFontWeight(DWRITE_FONT_WEIGHT_NORMAL, rangeC);
+                            pLayout->SetDrawingEffect((i == highlightIdx) ? m_pHighlightChineseBrush : m_pChineseBrush, rangeC);
+                        }
                         for (const auto& r : spaceRanges) { pLayout->SetFontSize(7.0f, r); }
-
-                        DWRITE_TEXT_METRICS metrics;
                         pLayout->GetMetrics(&metrics);
-                        float totalW = metrics.width;
-                        float lineOffset = (i - virtualIdx) * step;
-                        float currentCenterX = centerX + lineOffset;
-                        float startX = currentCenterX - totalW / 2.0f;
+                        totalW = metrics.width;
+                    }
 
-                        // === 面板滚动 ===
-                        float startY = 20.0f;
-                        float availableHeight = height - startY - 40.0f;
-                        float offsetY = 0.0f;
-                        if (i == highlightIdx && metrics.height > availableHeight) {
+                    float startX = 0.0f;
+                    float drawX = 0.0f;
+                    float menkX = 0.0f;
+
+                    if (hasMenk && pLayoutMenk) {
+                        if (mText.empty()) {
+                            float combinedWidth = totalW + metricsMenk.height;
+                            float leftMost = currentCenterX - combinedWidth / 2.0f;
+                            menkX = leftMost + metricsMenk.height;
+                            drawX = menkX;
+                        }
+                        else {
+                            startX = currentCenterX - totalW / 2.0f;
+                            menkX = startX + totalW;
+                            drawX = startX;
+                        }
+                    }
+                    else {
+                        startX = currentCenterX - totalW / 2.0f;
+                        drawX = startX;
+                    }
+
+                    float offsetY = 0.0f;
+                    if (i == highlightIdx) {
+                        float overflowCn = metrics.height - availableHeight;
+                        float overflowMenk = (hasMenk && pLayoutMenk) ? (metricsMenk.width - availableHeight) : 0.0f;
+                        float maxOverflow = (std::max)(overflowCn, overflowMenk);
+
+                        if (maxOverflow > 0.0f) {
                             double elapsed = currentTime - renderLyrics[i].time;
-
-                            // 【核心修复】如果正在拖动或吸附，强制从头开始显示
                             if (m_isActuallyDragging || m_isSnapping) elapsed = 0.0;
-
-                            if (elapsed > 0.5) {
-                                float overflow = metrics.height - availableHeight + 20.0f;
-                                float scrollSpeed = overflow / 3.5f; // 放慢到 3.5 秒
-                                offsetY = (float)(elapsed - 0.5) * scrollSpeed;
-                                if (offsetY > overflow) offsetY = overflow;
+                            if (elapsed > 0.2) {
+                                // 把滚动余量调成 0.0f，稍微多滚一点点就停
+                                float totalOverflow = maxOverflow + 0.0f;
+                                float scrollSpeed = totalOverflow / 3.5f;
+                                offsetY = (float)(elapsed - 0.2) * scrollSpeed;
+                                if (offsetY > totalOverflow) offsetY = totalOverflow;
                             }
                         }
-
-                        bool needClip = (offsetY > 0.0f);
-                        if (needClip) {
-                            D2D1_RECT_F clipRect = D2D1::RectF(0.0f, startY, width, height);
-                            m_pRenderTarget->PushAxisAlignedClip(clipRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-                        }
-
-                        m_pRenderTarget->DrawTextLayout(D2D1::Point2F(startX, startY - offsetY), pLayout, m_pMongolBrush);
-
-                        if (needClip) {
-                            m_pRenderTarget->PopAxisAlignedClip();
-                        }
-
-                        pLayout->Release();
                     }
+
+                    if (pLayout) {
+                        m_pRenderTarget->DrawTextLayout(D2D1::Point2F(drawX, startY - offsetY), pLayout, m_pMongolBrush);
+                    }
+
+                    if (hasMenk && pLayoutMenk) {
+                        D2D1::Matrix3x2F oldTransform;
+                        m_pRenderTarget->GetTransform(&oldTransform);
+                        D2D1::Matrix3x2F transform = D2D1::Matrix3x2F::Rotation(90.0f) * D2D1::Matrix3x2F::Translation(menkX, startY - offsetY);
+                        m_pRenderTarget->SetTransform(transform * oldTransform);
+                        m_pRenderTarget->DrawTextLayout(D2D1::Point2F(0.0f, 0.0f), pLayoutMenk, (i == highlightIdx) ? m_pHighlightMongolBrush : m_pMongolBrush);
+                        m_pRenderTarget->SetTransform(oldTransform);
+                    }
+
+                    if (pLayout) pLayout->Release();
+                    if (pLayoutMenk) pLayoutMenk->Release();
+                    if (pMenkFormat) pMenkFormat->Release();
                 }
+                m_pRenderTarget->PopAxisAlignedClip();
             }
         }
         m_pRenderTarget->EndDraw();
@@ -914,4 +1112,7 @@ LRESULT MongolPanelInstance::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
     EndPaint(&ps); return 0;
 }
 
+// ==========================================
+// 7. 注册面板组件
+// ==========================================
 static service_factory_single_t< ui_element_impl< MongolPanelInstance > > g_panel_factory;

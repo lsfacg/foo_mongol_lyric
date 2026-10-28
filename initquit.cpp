@@ -6,6 +6,7 @@
 #include <d2d1.h>
 #include <d2d1helper.h> 
 #include <dwrite.h>
+#include <dwrite_1.h>
 #include <objbase.h>
 #include <SDK/initquit.h>
 #include <SDK/playback_control.h> 
@@ -16,12 +17,13 @@
 #pragma comment(lib, "dwrite.lib")
 #pragma comment(lib, "d2d1.lib")
 
+// ================= 外部变量 =================
 extern const GUID guid_preferences_page;
 extern const GUID guid_pref_desktop;
 
 DECLARE_COMPONENT_VERSION(
     "\xE8\x92\x99\xE5\x8F\xA4\xE6\x96\x87\xE6\xAD\x8C\xE8\xAF\x8D",
-    "1.1.1",
+    "1.1.2",
     "Author: lsfacg\n"
     "A Desktop Lyric plugin for Traditional Mongolian.\n"
     "Special thanks to the Wucai Hulunbuir Children's Choir.\n"
@@ -55,12 +57,13 @@ float g_chineseOutlineSize = 0.7f;
 struct LyricLine {
     double time;
     std::wstring mongolText;
+    std::wstring mongolMenkText; // 蒙科立专属
     std::wstring chineseText;
 };
 
 std::vector<LyricLine> g_Lyrics;
-// 【修改】初始状态改为播放已停止
 std::wstring g_currentMongolText = L"播放已停止";
+std::wstring g_currentMenkText = L"";
 std::wstring g_currentChineseText = L"";
 int g_currentLineIndex = -1;
 
@@ -94,11 +97,13 @@ void UpdateFontSize(int delta) {
 
     if (g_pMongolFormat) g_pMongolFormat->Release();
     g_pDWriteFactory->CreateTextFormat(g_mongolFont.c_str(), nullptr, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, (float)g_fontSize, L"mn-MN", &g_pMongolFormat);
-    g_pMongolFormat->SetReadingDirection(DWRITE_READING_DIRECTION_TOP_TO_BOTTOM);
-    g_pMongolFormat->SetFlowDirection(DWRITE_FLOW_DIRECTION_LEFT_TO_RIGHT);
-    g_pMongolFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-    g_pMongolFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
-    g_pMongolFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    if (g_pMongolFormat) {
+        g_pMongolFormat->SetReadingDirection(DWRITE_READING_DIRECTION_TOP_TO_BOTTOM);
+        g_pMongolFormat->SetFlowDirection(DWRITE_FLOW_DIRECTION_LEFT_TO_RIGHT);
+        g_pMongolFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        g_pMongolFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+        g_pMongolFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    }
 
     float scale = (float)g_fontSize / 40.0f;
     g_windowWidth = (int)(250 * scale);
@@ -120,19 +125,23 @@ void InitDWrite() {
         g_mongolFont.c_str(), nullptr, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
         (float)g_fontSize, L"mn-MN", &g_pMongolFormat
     );
-    g_pMongolFormat->SetReadingDirection(DWRITE_READING_DIRECTION_TOP_TO_BOTTOM);
-    g_pMongolFormat->SetFlowDirection(DWRITE_FLOW_DIRECTION_LEFT_TO_RIGHT);
-    g_pMongolFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-    g_pMongolFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
-    g_pMongolFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    if (g_pMongolFormat) {
+        g_pMongolFormat->SetReadingDirection(DWRITE_READING_DIRECTION_TOP_TO_BOTTOM);
+        g_pMongolFormat->SetFlowDirection(DWRITE_FLOW_DIRECTION_LEFT_TO_RIGHT);
+        g_pMongolFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        g_pMongolFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+        g_pMongolFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    }
 
     g_pDWriteFactory->CreateTextFormat(
         g_chineseFont.c_str(), nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
         20.0f, L"zh-CN", &g_pUIFontFormat
     );
-    g_pUIFontFormat->SetReadingDirection(DWRITE_READING_DIRECTION_LEFT_TO_RIGHT);
-    g_pUIFontFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-    g_pUIFontFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    if (g_pUIFontFormat) {
+        g_pUIFontFormat->SetReadingDirection(DWRITE_READING_DIRECTION_LEFT_TO_RIGHT);
+        g_pUIFontFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        g_pUIFontFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    }
 
     D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
         D2D1_RENDER_TARGET_TYPE_DEFAULT,
@@ -252,11 +261,13 @@ void ApplySettingsAndRefresh() {
 
         if (g_pMongolFormat) g_pMongolFormat->Release();
         g_pDWriteFactory->CreateTextFormat(g_mongolFont.c_str(), nullptr, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, (float)g_fontSize, L"mn-MN", &g_pMongolFormat);
-        g_pMongolFormat->SetReadingDirection(DWRITE_READING_DIRECTION_TOP_TO_BOTTOM);
-        g_pMongolFormat->SetFlowDirection(DWRITE_FLOW_DIRECTION_LEFT_TO_RIGHT);
-        g_pMongolFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-        g_pMongolFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
-        g_pMongolFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        if (g_pMongolFormat) {
+            g_pMongolFormat->SetReadingDirection(DWRITE_READING_DIRECTION_TOP_TO_BOTTOM);
+            g_pMongolFormat->SetFlowDirection(DWRITE_FLOW_DIRECTION_LEFT_TO_RIGHT);
+            g_pMongolFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            g_pMongolFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+            g_pMongolFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        }
 
         float scale = (float)g_fontSize / 40.0f;
         g_windowWidth = (int)(250 * scale);
@@ -319,21 +330,27 @@ void ParseLyrics(const pfc::string8& lyrics) {
                     if (wText.empty()) continue;
 
                     bool hasMongol = false;
+                    bool hasMenk = false;
                     for (wchar_t c : wText) {
-                        if (c >= 0x1800 && c <= 0x18AF) { hasMongol = true; break; }
+                        if (c >= 0x1800 && c <= 0x18AF) hasMongol = true;
+                        else if (c >= 0xE000 && c <= 0xF8FF) hasMenk = true;
                     }
 
                     if (!g_Lyrics.empty() && abs(g_Lyrics.back().time - totalSeconds) < 0.2) {
                         if (hasMongol && g_Lyrics.back().mongolText.empty()) {
                             g_Lyrics.back().mongolText = wText;
                         }
-                        else if (!hasMongol && g_Lyrics.back().chineseText.empty()) {
+                        else if (hasMenk && g_Lyrics.back().mongolMenkText.empty()) {
+                            g_Lyrics.back().mongolMenkText = wText;
+                        }
+                        else if (!hasMongol && !hasMenk && g_Lyrics.back().chineseText.empty()) {
                             g_Lyrics.back().chineseText = wText;
                         }
                         else {
                             LyricLine newLine;
                             newLine.time = totalSeconds;
                             if (hasMongol) newLine.mongolText = wText;
+                            else if (hasMenk) newLine.mongolMenkText = wText;
                             else newLine.chineseText = wText;
                             g_Lyrics.push_back(newLine);
                         }
@@ -342,6 +359,7 @@ void ParseLyrics(const pfc::string8& lyrics) {
                         LyricLine newLine;
                         newLine.time = totalSeconds;
                         if (hasMongol) newLine.mongolText = wText;
+                        else if (hasMenk) newLine.mongolMenkText = wText;
                         else newLine.chineseText = wText;
                         g_Lyrics.push_back(newLine);
                     }
@@ -350,7 +368,6 @@ void ParseLyrics(const pfc::string8& lyrics) {
         }
     }
 }
-
 void FetchLyricsNow(metadb_handle_ptr item) {
     pfc::string8 lyrics = "";
     if (item.is_valid()) {
@@ -420,16 +437,19 @@ void FetchLyricsNow(metadb_handle_ptr item) {
         ParseLyrics(lyrics);
         if (g_Lyrics.empty()) {
             g_currentMongolText = L"解析失败";
+            g_currentMenkText = L"";
             g_currentChineseText = L"";
         }
         else {
             g_currentMongolText = L"准备就绪";
+            g_currentMenkText = L"";
             g_currentChineseText = L"";
         }
     }
     else {
         g_Lyrics.clear();
         g_currentMongolText = L"未找到歌词";
+        g_currentMenkText = L"";
         g_currentChineseText = L"";
     }
     LeaveCriticalSection(&g_csLyrics);
@@ -476,6 +496,7 @@ public:
         EnterCriticalSection(&g_csLyrics);
         g_Lyrics.clear();
         g_currentMongolText = L"播放已停止";
+        g_currentMenkText = L"";
         g_currentChineseText = L"";
         g_currentLineIndex = -1;
         g_isPlaying = false;
@@ -498,13 +519,11 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         LoadSettings(hwnd);
         InitDWrite();
         ShowWindow(hwnd, g_isVisible ? SW_SHOW : SW_HIDE);
-        // 【优化】降低分层窗口重绘频率，从 30ms 降到 40ms
         SetTimer(hwnd, 1, 40, NULL);
         return 0;
     case WM_MOUSEWHEEL:
     {
         if (GET_KEYSTATE_WPARAM(wParam) & MK_CONTROL) {
-            // 加入防抖逻辑，防止一次滚动触发多次导致跨越太大
             static DWORD lastWheelTime = 0;
             DWORD currentTime = GetTickCount();
             if (currentTime - lastWheelTime < 50) return 0;
@@ -547,17 +566,18 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 g_currentLineIndex = newIndex;
                 if (newIndex >= 0) {
                     g_currentMongolText = g_Lyrics[newIndex].mongolText;
+                    g_currentMenkText = g_Lyrics[newIndex].mongolMenkText;
                     g_currentChineseText = g_Lyrics[newIndex].chineseText;
                 }
                 else {
                     g_currentMongolText = L"...";
+                    g_currentMenkText = L"";
                     g_currentChineseText = L"";
                 }
                 needsRepaint = true;
             }
             else if (g_currentLineIndex >= 0 && g_isPlaying) {
                 double lineStart = g_Lyrics[g_currentLineIndex].time;
-                // 【优化】重绘触发提前到 1.5 秒
                 if (currentTime - lineStart > 1.5) {
                     needsRepaint = true;
                 }
@@ -731,21 +751,24 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             g_pDCRenderTarget->FillRectangle(bgRect, g_pHoverBrush);
         }
 
-        std::wstring displayMongolian, displayChinese;
+        std::wstring displayMongolian, displayMenk, displayChinese;
         int currentLineIdx = -1;
         double currentTime = 0.0;
 
         EnterCriticalSection(&g_csLyrics);
         if (g_displayMode == 0) {
             displayMongolian = g_currentMongolText;
+            displayMenk = g_currentMenkText;
             displayChinese = g_currentChineseText;
         }
         else if (g_displayMode == 1) {
             displayMongolian = g_currentMongolText;
+            displayMenk = g_currentMenkText;
             displayChinese = L"";
         }
         else if (g_displayMode == 2) {
             displayMongolian = L"";
+            displayMenk = L"";
             displayChinese = g_currentChineseText;
         }
         currentLineIdx = g_currentLineIndex;
@@ -756,7 +779,7 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         float angleStep = 2.0f * 3.14159265f / steps;
         g_pDCRenderTarget->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
 
-        if (!displayMongolian.empty() || !displayChinese.empty()) {
+        if (!displayMongolian.empty() || !displayChinese.empty() || !displayMenk.empty()) {
             std::wstring fullText = displayMongolian;
             if (!displayMongolian.empty() && !displayChinese.empty()) {
                 fullText += L"\n";
@@ -779,104 +802,176 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 g_pMongolFormat, (float)width - 20.0f, 5000.0f, &pLayout
             );
 
-            if (!displayChinese.empty()) {
-                UINT32 mongLength = (UINT32)displayMongolian.length();
-                UINT32 chStart = (mongLength > 0) ? mongLength + 1 : 0;
-                UINT32 chLength = (UINT32)fullText.length() - chStart;
+            if (pLayout) {
+                if (!displayChinese.empty()) {
+                    UINT32 mongLength = (UINT32)displayMongolian.length();
+                    UINT32 chStart = (mongLength > 0) ? mongLength + 1 : 0;
+                    UINT32 chLength = (UINT32)fullText.length() - chStart;
 
-                DWRITE_TEXT_RANGE chRange = { chStart, chLength };
+                    DWRITE_TEXT_RANGE chRange = { chStart, chLength };
 
-                pLayout->SetFontFamilyName(g_chineseFont.c_str(), chRange);
-                pLayout->SetFontWeight(DWRITE_FONT_WEIGHT_NORMAL, chRange);
-                pLayout->SetFontSize((float)(g_fontSize - 5), chRange);
+                    pLayout->SetFontFamilyName(g_chineseFont.c_str(), chRange);
+                    pLayout->SetFontWeight(DWRITE_FONT_WEIGHT_NORMAL, chRange);
+                    pLayout->SetFontSize((float)(g_fontSize - 5), chRange);
 
-                for (const auto& range : spaceRanges) {
-                    pLayout->SetFontSize(7.0f, range);
-                }
-            }
-
-            DWRITE_TEXT_METRICS metrics;
-            pLayout->GetMetrics(&metrics);
-
-            float startX = (width - metrics.width) / 2.0f;
-            if (startX < 10.0f) startX = 10.0f;
-
-            float startY = 90.0f;
-            float bottomMargin = 10.0f;
-            float availableHeight = (float)height - startY - bottomMargin;
-            float offsetY = 0.0f;
-
-            // 【优化】加快滚动速度：3 秒滚完
-            if (metrics.height > availableHeight && currentLineIdx >= 0 && currentLineIdx < (int)g_Lyrics.size()) {
-                double lineStart = g_Lyrics[currentLineIdx].time;
-                double elapsed = currentTime - lineStart;
-                if (elapsed > 1.5) {
-                    float overflow = metrics.height - availableHeight;
-                    float scrollSpeed = overflow / 3.0f; // 这里是修改点
-                    offsetY = (float)(elapsed - 1.5) * scrollSpeed;
-                    if (offsetY > overflow) {
-                        offsetY = overflow;
+                    for (const auto& range : spaceRanges) {
+                        pLayout->SetFontSize(7.0f, range);
                     }
                 }
-            }
 
-            D2D1_POINT_2F origin = D2D1::Point2F(startX, startY - offsetY);
+                DWRITE_TEXT_METRICS metrics;
+                pLayout->GetMetrics(&metrics);
 
-            bool needClip = (offsetY > 0.0f);
-            if (needClip) {
-                D2D1_RECT_F clipRect = D2D1::RectF(0.0f, startY, (float)width, (float)height);
+                IDWriteTextFormat* pMenkFormat = nullptr;
+                IDWriteTextLayout* pLayoutMenk = nullptr;
+                DWRITE_TEXT_METRICS metricsMenk = { 0 };
+                bool hasMenk = !displayMenk.empty();
+
+                if (hasMenk) {
+                    g_pDWriteFactory->CreateTextFormat(g_mongolFont.c_str(), nullptr, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, (float)g_fontSize, L"", &pMenkFormat);
+                    if (pMenkFormat) {
+                        pMenkFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                        g_pDWriteFactory->CreateTextLayout(displayMenk.c_str(), (UINT32)displayMenk.length(), pMenkFormat, 5000.0f, 5000.0f, &pLayoutMenk);
+                        if (pLayoutMenk) {
+                            pLayoutMenk->GetMetrics(&metricsMenk);
+                        }
+                    }
+                }
+
+                float startX = (width - metrics.width) / 2.0f;
+                float menkX = (width + metricsMenk.height) / 2.0f;
+
+                // === 严格区分排版情况 ===
+                if (hasMenk && pLayoutMenk) {
+                    // 只有纯蒙科立（没有标准蒙文，也没有中文）
+                    if (displayMongolian.empty() && displayChinese.empty()) {
+                        float totalWidth = metrics.width + metricsMenk.height;
+
+                        // 【这里就是你专门用来微调纯蒙科立左右位置的参数】
+                        // 正数往右移，负数往左移
+                        float pureMenkOffsetX = 20.0f;
+
+                        startX = (width - totalWidth) / 2.0f + pureMenkOffsetX;
+                        if (startX < 10.0f) startX = 10.0f;
+                        menkX = startX + metricsMenk.height;
+                    }
+                    // 双语（中文 + 蒙科立，无标准蒙文）
+                    else if (displayMongolian.empty()) {
+                        float totalWidth = metrics.width + metricsMenk.height;
+                        startX = (width - totalWidth) / 2.0f;
+                        if (startX < 10.0f) startX = 10.0f;
+                        menkX = startX + metricsMenk.height;
+                    }
+                    // 含有标准蒙文的情况（标准蒙文 + 蒙科立，或 标准蒙文 + 蒙科立 + 中文）
+                    else {
+                        if (startX < 10.0f) startX = 10.0f;
+                        menkX = startX + metrics.width;
+                    }
+                }
+                else {
+                    if (startX < 10.0f) startX = 10.0f;
+                }
+
+                float drawX = startX;
+                if (hasMenk && pLayoutMenk && displayMongolian.empty()) {
+                    drawX += metricsMenk.height;
+                }
+
+                float startY = 90.0f;
+                float bottomMargin = 10.0f;
+                float availableHeight = (float)height - startY - bottomMargin;
+                float offsetY = 0.0f;
+
+                if (currentLineIdx >= 0 && currentLineIdx < (int)g_Lyrics.size()) {
+                    float overflowCn = metrics.height - availableHeight;
+                    float overflowMenk = (hasMenk && pLayoutMenk) ? (metricsMenk.width - availableHeight) : 0.0f;
+                    float maxOverflow = (std::max)(overflowCn, overflowMenk);
+
+                    if (maxOverflow > 0.0f) {
+                        double lineStart = g_Lyrics[currentLineIdx].time;
+                        double elapsed = currentTime - lineStart;
+                        if (elapsed > 1.5) {
+                            float scrollSpeed = maxOverflow / 3.0f;
+                            offsetY = (float)(elapsed - 1.5) * scrollSpeed;
+                            if (offsetY > maxOverflow) offsetY = maxOverflow;
+                        }
+                    }
+                }
+
+                D2D1_POINT_2F origin = D2D1::Point2F(drawX, startY - offsetY);
+
+                D2D1_RECT_F clipRect = D2D1::RectF(0.0f, startY, (float)width, 5000.0f);
                 g_pDCRenderTarget->PushAxisAlignedClip(clipRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-            }
 
-            if (!displayMongolian.empty()) {
-                DWRITE_TEXT_RANGE mongRange = { 0, (UINT32)displayMongolian.length() };
-                pLayout->SetDrawingEffect(g_pMongolOutlineBrush, mongRange);
-
-                for (int i = 0; i < steps; ++i) {
-                    float angle = i * angleStep;
-                    D2D1_POINT_2F outlineOrigin = D2D1::Point2F(
-                        origin.x + cosf(angle) * g_mongolOutlineSize,
-                        origin.y + sinf(angle) * g_mongolOutlineSize
-                    );
-                    g_pDCRenderTarget->DrawTextLayout(outlineOrigin, pLayout, g_pMongolOutlineBrush);
+                if (!displayMongolian.empty()) {
+                    DWRITE_TEXT_RANGE mongRange = { 0, (UINT32)displayMongolian.length() };
+                    pLayout->SetDrawingEffect(g_pMongolOutlineBrush, mongRange);
+                    for (int i = 0; i < steps; ++i) {
+                        float angle = i * angleStep;
+                        D2D1_POINT_2F outlineOrigin = D2D1::Point2F(origin.x + cosf(angle) * g_mongolOutlineSize, origin.y + sinf(angle) * g_mongolOutlineSize);
+                        g_pDCRenderTarget->DrawTextLayout(outlineOrigin, pLayout, g_pMongolOutlineBrush);
+                    }
                 }
-            }
 
-            if (!displayChinese.empty()) {
-                UINT32 mongLength = (UINT32)displayMongolian.length();
-                UINT32 chStart = (mongLength > 0) ? mongLength + 1 : 0;
-                UINT32 chLength = (UINT32)fullText.length() - chStart;
-                DWRITE_TEXT_RANGE chRange = { chStart, chLength };
-
-                pLayout->SetDrawingEffect(g_pChineseOutlineBrush, chRange);
-
-                for (int i = 0; i < steps; ++i) {
-                    float angle = i * angleStep;
-                    D2D1_POINT_2F outlineOrigin = D2D1::Point2F(
-                        origin.x + cosf(angle) * g_chineseOutlineSize,
-                        origin.y + sinf(angle) * g_chineseOutlineSize
-                    );
-                    g_pDCRenderTarget->DrawTextLayout(outlineOrigin, pLayout, g_pChineseOutlineBrush);
+                if (!displayChinese.empty()) {
+                    UINT32 mongLength = (UINT32)displayMongolian.length();
+                    UINT32 chStart = (mongLength > 0) ? mongLength + 1 : 0;
+                    UINT32 chLength = (UINT32)fullText.length() - chStart;
+                    DWRITE_TEXT_RANGE chRange = { chStart, chLength };
+                    pLayout->SetDrawingEffect(g_pChineseOutlineBrush, chRange);
+                    for (int i = 0; i < steps; ++i) {
+                        float angle = i * angleStep;
+                        D2D1_POINT_2F outlineOrigin = D2D1::Point2F(origin.x + cosf(angle) * g_chineseOutlineSize, origin.y + sinf(angle) * g_chineseOutlineSize);
+                        g_pDCRenderTarget->DrawTextLayout(outlineOrigin, pLayout, g_pChineseOutlineBrush);
+                    }
                 }
-            }
 
-            if (!displayMongolian.empty()) {
-                DWRITE_TEXT_RANGE mongRange = { 0, (UINT32)displayMongolian.length() };
-                pLayout->SetDrawingEffect(g_pMongolBrush, mongRange);
-            }
-            if (!displayChinese.empty()) {
-                UINT32 mongLength = (UINT32)displayMongolian.length();
-                UINT32 chStart = (mongLength > 0) ? mongLength + 1 : 0;
-                UINT32 chLength = (UINT32)fullText.length() - chStart;
-                DWRITE_TEXT_RANGE chRange = { chStart, chLength };
-                pLayout->SetDrawingEffect(g_pChineseBrush, chRange);
-            }
+                if (!displayMongolian.empty()) {
+                    DWRITE_TEXT_RANGE mongRange = { 0, (UINT32)displayMongolian.length() };
+                    pLayout->SetDrawingEffect(g_pMongolBrush, mongRange);
+                }
+                if (!displayChinese.empty()) {
+                    UINT32 mongLength = (UINT32)displayMongolian.length();
+                    UINT32 chStart = (mongLength > 0) ? mongLength + 1 : 0;
+                    UINT32 chLength = (UINT32)fullText.length() - chStart;
+                    DWRITE_TEXT_RANGE chRange = { chStart, chLength };
+                    pLayout->SetDrawingEffect(g_pChineseBrush, chRange);
+                }
 
-            g_pDCRenderTarget->DrawTextLayout(origin, pLayout, g_pMongolBrush);
-            pLayout->Release();
+                g_pDCRenderTarget->DrawTextLayout(origin, pLayout, g_pMongolBrush);
 
-            if (needClip) {
+                if (hasMenk && pLayoutMenk) {
+                    D2D1::Matrix3x2F oldTransform;
+                    g_pDCRenderTarget->GetTransform(&oldTransform);
+
+                    D2D1::Matrix3x2F transform =
+                        D2D1::Matrix3x2F::Rotation(90.0f) *
+                        D2D1::Matrix3x2F::Translation(menkX, startY - offsetY);
+
+                    g_pDCRenderTarget->SetTransform(transform * oldTransform);
+
+                    DWRITE_TEXT_RANGE menkRange = { 0, (UINT32)displayMenk.length() };
+
+                    pLayoutMenk->SetDrawingEffect(g_pMongolOutlineBrush, menkRange);
+                    for (int i = 0; i < steps; ++i) {
+                        float angle = i * angleStep;
+                        D2D1_POINT_2F outlineOrigin = D2D1::Point2F(cosf(angle) * g_mongolOutlineSize, sinf(angle) * g_mongolOutlineSize);
+                        g_pDCRenderTarget->DrawTextLayout(outlineOrigin, pLayoutMenk, g_pMongolOutlineBrush);
+                    }
+
+                    pLayoutMenk->SetDrawingEffect(g_pMongolBrush, menkRange);
+                    g_pDCRenderTarget->DrawTextLayout(D2D1::Point2F(0.0f, 0.0f), pLayoutMenk, g_pMongolBrush);
+                    g_pDCRenderTarget->SetTransform(oldTransform);
+
+                    pLayoutMenk->Release();
+                }
+                if (pMenkFormat) {
+                    pMenkFormat->Release();
+                }
+
                 g_pDCRenderTarget->PopAxisAlignedClip();
+
+                pLayout->Release();
             }
         }
 
@@ -893,10 +988,12 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
                 IDWriteTextLayout* pBtnLayout = nullptr;
                 g_pDWriteFactory->CreateTextLayout(text, (UINT32)wcslen(text), g_pUIFontFormat, btnW, 40.0f, &pBtnLayout);
-                DWRITE_TEXT_RANGE range = { 0, (UINT32)wcslen(text) };
-                pBtnLayout->SetFontSize(fontSize, range);
-                g_pDCRenderTarget->DrawTextLayout(D2D1::Point2F(rect.left, rect.top), pBtnLayout, brush);
-                pBtnLayout->Release();
+                if (pBtnLayout) {
+                    DWRITE_TEXT_RANGE range = { 0, (UINT32)wcslen(text) };
+                    pBtnLayout->SetFontSize(fontSize, range);
+                    g_pDCRenderTarget->DrawTextLayout(D2D1::Point2F(rect.left, rect.top), pBtnLayout, brush);
+                    pBtnLayout->Release();
+                }
                 };
 
             DrawBtn(L"－", 0, 30.0f);
