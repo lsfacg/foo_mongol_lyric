@@ -23,7 +23,7 @@ extern const GUID guid_pref_desktop;
 
 DECLARE_COMPONENT_VERSION(
     "\xE8\x92\x99\xE5\x8F\xA4\xE6\x96\x87\xE6\xAD\x8C\xE8\xAF\x8D",
-    "1.1.2",
+    "1.1.3",
     "Author: lsfacg\n"
     "A Desktop Lyric plugin for Traditional Mongolian.\n"
     "Special thanks to the Wucai Hulunbuir Children's Choir.\n"
@@ -33,6 +33,7 @@ DECLARE_COMPONENT_VERSION(
 bool g_isVisible = true;
 bool g_isLocked = false;
 bool g_isTopmost = true;
+bool g_desktopShowTip = true; // 【新增】桌面歌词是否显示状态提示
 HWND g_hwndLyrics = NULL;
 int g_displayMode = 0;
 int g_reload_flag = 0;
@@ -57,12 +58,12 @@ float g_chineseOutlineSize = 0.7f;
 struct LyricLine {
     double time;
     std::wstring mongolText;
-    std::wstring mongolMenkText; // 蒙科立专属
+    std::wstring mongolMenkText;
     std::wstring chineseText;
 };
 
 std::vector<LyricLine> g_Lyrics;
-std::wstring g_currentMongolText = L"播放已停止";
+std::wstring g_currentMongolText = L"";
 std::wstring g_currentMenkText = L"";
 std::wstring g_currentChineseText = L"";
 int g_currentLineIndex = -1;
@@ -162,7 +163,7 @@ void LoadSettings(HWND hwnd) {
     HKEY hKey;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, REG_PATH, 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
         DWORD type, size;
-        int x = 100, y = 100, vis = 1, fs = 40, locked = 0, topmost = 1, dm = 0;
+        int x = 100, y = 100, vis = 1, fs = 40, locked = 0, topmost = 1, dm = 0, tip = 1;
         size = sizeof(int);
         RegQueryValueExW(hKey, L"X", NULL, &type, (LPBYTE)&x, &size);
         RegQueryValueExW(hKey, L"Y", NULL, &type, (LPBYTE)&y, &size);
@@ -171,12 +172,14 @@ void LoadSettings(HWND hwnd) {
         RegQueryValueExW(hKey, L"Locked", NULL, &type, (LPBYTE)&locked, &size);
         RegQueryValueExW(hKey, L"Topmost", NULL, &type, (LPBYTE)&topmost, &size);
         RegQueryValueExW(hKey, L"DisplayMode", NULL, &type, (LPBYTE)&dm, &size);
+        RegQueryValueExW(hKey, L"ShowTip", NULL, &type, (LPBYTE)&tip, &size);
 
         g_isVisible = (vis == 1);
         g_fontSize = fs;
         g_isLocked = (locked == 1);
         g_isTopmost = (topmost == 1);
         g_displayMode = dm;
+        g_desktopShowTip = (tip == 1);
 
         wchar_t fontBuf[256] = { 0 };
         size = sizeof(fontBuf);
@@ -221,6 +224,7 @@ void SaveSettings(HWND hwnd) {
         int locked = g_isLocked ? 1 : 0;
         int topmost = g_isTopmost ? 1 : 0;
         int dm = g_displayMode;
+        int tip = g_desktopShowTip ? 1 : 0;
 
         RegSetValueExW(hKey, L"X", 0, REG_DWORD, (const BYTE*)&x, sizeof(int));
         RegSetValueExW(hKey, L"Y", 0, REG_DWORD, (const BYTE*)&y, sizeof(int));
@@ -229,6 +233,7 @@ void SaveSettings(HWND hwnd) {
         RegSetValueExW(hKey, L"Locked", 0, REG_DWORD, (const BYTE*)&locked, sizeof(int));
         RegSetValueExW(hKey, L"Topmost", 0, REG_DWORD, (const BYTE*)&topmost, sizeof(int));
         RegSetValueExW(hKey, L"DisplayMode", 0, REG_DWORD, (const BYTE*)&dm, sizeof(int));
+        RegSetValueExW(hKey, L"ShowTip", 0, REG_DWORD, (const BYTE*)&tip, sizeof(int));
 
         RegSetValueExW(hKey, L"MongolFont", 0, REG_SZ, (const BYTE*)g_mongolFont.c_str(), (g_mongolFont.length() + 1) * sizeof(wchar_t));
         RegSetValueExW(hKey, L"ChineseFont", 0, REG_SZ, (const BYTE*)g_chineseFont.c_str(), (g_chineseFont.length() + 1) * sizeof(wchar_t));
@@ -441,19 +446,19 @@ void FetchLyricsNow(metadb_handle_ptr item) {
     if (!lyrics.is_empty()) {
         ParseLyrics(lyrics);
         if (g_Lyrics.empty()) {
-            g_currentMongolText = L"解析失败";
+            g_currentMongolText = g_desktopShowTip ? L"解析失败" : L"";
             g_currentMenkText = L"";
             g_currentChineseText = L"";
         }
         else {
-            g_currentMongolText = L"准备就绪";
+            g_currentMongolText = g_desktopShowTip ? L"准备就绪" : L"";
             g_currentMenkText = L"";
             g_currentChineseText = L"";
         }
     }
     else {
         g_Lyrics.clear();
-        g_currentMongolText = L"未找到歌词";
+        g_currentMongolText = g_desktopShowTip ? L"未找到歌词" : L"";
         g_currentMenkText = L"";
         g_currentChineseText = L"";
     }
@@ -500,7 +505,7 @@ public:
     void on_playback_stop(playback_control::t_stop_reason p_reason) override {
         EnterCriticalSection(&g_csLyrics);
         g_Lyrics.clear();
-        g_currentMongolText = L"播放已停止";
+        g_currentMongolText = g_desktopShowTip ? L"播放已停止" : L"";
         g_currentMenkText = L"";
         g_currentChineseText = L"";
         g_currentLineIndex = -1;
@@ -575,7 +580,7 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                     g_currentChineseText = g_Lyrics[newIndex].chineseText;
                 }
                 else {
-                    g_currentMongolText = L"...";
+                    g_currentMongolText = g_desktopShowTip ? L"..." : L"";
                     g_currentMenkText = L"";
                     g_currentChineseText = L"";
                 }

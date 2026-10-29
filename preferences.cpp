@@ -17,8 +17,11 @@
 extern int g_fontSize; extern std::wstring g_mongolFont; extern std::wstring g_chineseFont; extern D2D1_COLOR_F g_mongolColor; extern D2D1_COLOR_F g_chineseColor;
 extern D2D1_COLOR_F g_mongolOutlineColor; extern D2D1_COLOR_F g_chineseOutlineColor; extern float g_mongolOutlineSize; extern float g_chineseOutlineSize;
 extern int g_displayMode; extern bool g_isVisible; extern bool g_isLocked; extern bool g_isTopmost;
+extern bool g_desktopShowTip; // 【新增】桌面歌词状态提示开关
+
 extern int g_panelFontSize; extern std::wstring g_panelMongolFont; extern std::wstring g_panelChineseFont; extern D2D1_COLOR_F g_panelMongolColor; extern D2D1_COLOR_F g_panelChineseColor;
 extern D2D1_COLOR_F g_panelHighlightMongolColor; extern D2D1_COLOR_F g_panelHighlightChineseColor; extern D2D1_COLOR_F g_panelBgColor; extern int g_panelDisplayMode;
+extern bool g_panelShowTip; // 【新增】面板歌词状态提示开关
 
 void ApplySettingsAndRefresh(); extern void SavePanelSettings();
 #define WM_APP_SETTINGS_CHANGED (WM_APP + 1)
@@ -74,7 +77,6 @@ private:
             if (msg == WM_SIZE) {
                 RECT rc; GetClientRect(hwnd, &rc);
 
-                // 【排版】大标题居中，Y轴偏移量改为 -115
                 if (pThis->m_hTitle) {
                     int titleW = 400; int titleH = 50;
                     SetWindowPos(pThis->m_hTitle, NULL, (rc.right - titleW) / 2 - 12, (rc.bottom - titleH) / 2 - 105, titleW, titleH, SWP_NOZORDER);
@@ -158,6 +160,7 @@ private:
     HWND m_hwnd; preferences_page_callback::ptr m_callback;
     HWND m_hSliderFontSize, m_hLabelFontSize, m_hComboDisplayMode;
     HWND m_hChkVisible, m_hChkLock, m_hChkTopmost;
+    HWND m_hChkShowTip; // 【新增】
     HWND m_hComboFontM, m_hBtnColorM, m_hBtnOutlineColorM, m_hSliderOutlineM, m_hLabelOutlineM;
     HWND m_hComboFontC, m_hBtnColorC, m_hBtnOutlineColorC, m_hSliderOutlineC, m_hLabelOutlineC;
     bool m_dirty = false; WNDPROC m_oldWndProc = nullptr; HFONT m_hFontBold;
@@ -190,7 +193,7 @@ private:
             }
             else if (msg == WM_COMMAND) {
                 int id = LOWORD(wp); int code = HIWORD(wp);
-                if ((id == 1003 && code == CBN_SELCHANGE) || (id == 1004 && code == CBN_SELCHANGE) || (id == 1005 && code == CBN_SELCHANGE) || ((id == 1007 || id == 1008 || id == 1009) && code == BN_CLICKED)) { pThis->m_dirty = true; if (pThis->m_callback.is_valid()) pThis->m_callback->on_state_changed(); }
+                if ((id == 1003 && code == CBN_SELCHANGE) || (id == 1004 && code == CBN_SELCHANGE) || (id == 1005 && code == CBN_SELCHANGE) || ((id == 1007 || id == 1008 || id == 1009 || id == 1010) && code == BN_CLICKED)) { pThis->m_dirty = true; if (pThis->m_callback.is_valid()) pThis->m_callback->on_state_changed(); }
                 else if ((id == 2001 || id == 2003 || id == 2002 || id == 2004) && code == BN_CLICKED) {
                     CHOOSECOLORW cc = { 0 }; static COLORREF customColors[16] = { 0 }; cc.lStructSize = sizeof(cc); cc.hwndOwner = hwnd; cc.lpCustColors = customColors; cc.Flags = CC_FULLOPEN | CC_RGBINIT;
                     D2D1_COLOR_F* targetColor = (id == 2001) ? &g_mongolColor : (id == 2003) ? &g_mongolOutlineColor : (id == 2002) ? &g_chineseColor : &g_chineseOutlineColor;
@@ -214,6 +217,7 @@ public:
         y += gap; CreateWindowW(L"STATIC", L"\u7A97\u53E3\u63A7\u5236:", WS_CHILD | WS_VISIBLE, 20, y, labelW, 20, m_hwnd, nullptr, hInst, nullptr); m_hChkVisible = CreateWindowW(L"BUTTON", L"\u542F\u7528\u684C\u9762\u6B4C\u8BCD", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, ctrlX, y, 200, 20, m_hwnd, (HMENU)1007, hInst, nullptr); SendMessage(m_hChkVisible, BM_SETCHECK, g_isVisible ? BST_CHECKED : BST_UNCHECKED, 0);
         y += 30; m_hChkLock = CreateWindowW(L"BUTTON", L"\u9501\u5B9A\u684C\u9762\u6B4C\u8BCD", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, ctrlX, y, 200, 20, m_hwnd, (HMENU)1008, hInst, nullptr); SendMessage(m_hChkLock, BM_SETCHECK, g_isLocked ? BST_CHECKED : BST_UNCHECKED, 0);
         y += 30; m_hChkTopmost = CreateWindowW(L"BUTTON", L"\u7F6E\u9876\u6B4C\u8BCD\u7A97\u53E3", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, ctrlX, y, 200, 20, m_hwnd, (HMENU)1009, hInst, nullptr); SendMessage(m_hChkTopmost, BM_SETCHECK, g_isTopmost ? BST_CHECKED : BST_UNCHECKED, 0);
+        y += 30; m_hChkShowTip = CreateWindowW(L"BUTTON", L"\u663E\u793A\u72B6\u6001\u63D0\u793A", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, ctrlX, y, 200, 20, m_hwnd, (HMENU)1010, hInst, nullptr); SendMessage(m_hChkShowTip, BM_SETCHECK, g_desktopShowTip ? BST_CHECKED : BST_UNCHECKED, 0);
 
         y += 50; HWND hTitleM = CreateWindowW(L"STATIC", L"蒙古文设置", WS_CHILD | WS_VISIBLE, 20, y, 100, 25, m_hwnd, nullptr, hInst, nullptr); SendMessage(hTitleM, WM_SETFONT, (WPARAM)m_hFontBold, TRUE); CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_ETCHEDHORZ, 120, y + 12, 340, 2, m_hwnd, nullptr, hInst, nullptr);
         y += 45; CreateWindowW(L"STATIC", L"\u8499\u53E4\u6587\u5B57\u4F53:", WS_CHILD | WS_VISIBLE, 20, y, labelW, 20, m_hwnd, nullptr, hInst, nullptr); m_hComboFontM = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, ctrlX, y - 3, 250, 200, m_hwnd, (HMENU)1004, hInst, nullptr); PopulateFontsCombo(m_hComboFontM, g_mongolFont);
@@ -242,6 +246,7 @@ public:
     virtual void apply() override {
         g_fontSize = (int)SendMessage(m_hSliderFontSize, TBM_GETPOS, 0, 0); g_displayMode = (int)SendMessage(m_hComboDisplayMode, CB_GETCURSEL, 0, 0); g_isVisible = (SendMessage(m_hChkVisible, BM_GETCHECK, 0, 0) == BST_CHECKED);
         g_isLocked = (SendMessage(m_hChkLock, BM_GETCHECK, 0, 0) == BST_CHECKED); g_isTopmost = (SendMessage(m_hChkTopmost, BM_GETCHECK, 0, 0) == BST_CHECKED);
+        g_desktopShowTip = (SendMessage(m_hChkShowTip, BM_GETCHECK, 0, 0) == BST_CHECKED);
         int idxM = (int)SendMessage(m_hComboFontM, CB_GETCURSEL, 0, 0); if (idxM != CB_ERR) { wchar_t buf[256]; SendMessage(m_hComboFontM, CB_GETLBTEXT, idxM, (LPARAM)buf); g_mongolFont = buf; }
         g_mongolOutlineSize = (int)SendMessage(m_hSliderOutlineM, TBM_GETPOS, 0, 0) / 10.0f;
         int idxC = (int)SendMessage(m_hComboFontC, CB_GETCURSEL, 0, 0); if (idxC != CB_ERR) { wchar_t buf[256]; SendMessage(m_hComboFontC, CB_GETLBTEXT, idxC, (LPARAM)buf); g_chineseFont = buf; }
@@ -251,6 +256,7 @@ public:
 
     virtual void reset() override {
         SendMessage(m_hSliderFontSize, TBM_SETPOS, TRUE, 40); SendMessage(m_hComboDisplayMode, CB_SETCURSEL, 0, 0); g_isVisible = true; SendMessage(m_hChkVisible, BM_SETCHECK, BST_CHECKED, 0); SendMessage(m_hChkLock, BM_SETCHECK, BST_UNCHECKED, 0); SendMessage(m_hChkTopmost, BM_SETCHECK, BST_CHECKED, 0); SetWindowTextW(m_hLabelFontSize, L"40");
+        g_desktopShowTip = true; SendMessage(m_hChkShowTip, BM_SETCHECK, BST_CHECKED, 0);
 
         g_mongolFont = L"Mongolian Baiti"; g_chineseFont = L"Microsoft YaHei";
         int idxFontM = (int)SendMessage(m_hComboFontM, CB_FINDSTRINGEXACT, (WPARAM)-1, (LPARAM)L"Mongolian Baiti");
@@ -282,6 +288,7 @@ static preferences_page_factory_t<MongolPrefsDesktopPage> g_desktop_page_factory
 class MongolPrefsPanelInstance : public preferences_page_instance {
 private:
     HWND m_hwnd, m_hSliderFontSize, m_hLabelFontSize, m_hComboDisplayMode, m_hBtnColorBg, m_hComboFontM, m_hBtnColorM, m_hBtnColorHM, m_hComboFontC, m_hBtnColorC, m_hBtnColorHC;
+    HWND m_hChkShowTip; // 【新增】
     preferences_page_callback::ptr m_callback; bool m_dirty = false; WNDPROC m_oldWndProc = nullptr; HFONT m_hFontBold;
 
     static LRESULT CALLBACK PrefsWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -311,6 +318,7 @@ private:
             else if (msg == WM_COMMAND) {
                 int id = LOWORD(wp); int code = HIWORD(wp);
                 if ((id == 3010 || id == 3006 || id == 3007) && code == CBN_SELCHANGE) { pThis->m_dirty = true; if (pThis->m_callback.is_valid()) pThis->m_callback->on_state_changed(); }
+                else if (id == 3011 && code == BN_CLICKED) { pThis->m_dirty = true; if (pThis->m_callback.is_valid()) pThis->m_callback->on_state_changed(); }
                 else if ((id == 3001 || id == 3002 || id == 3004 || id == 3008 || id == 3009) && code == BN_CLICKED) {
                     CHOOSECOLORW cc = { 0 }; static COLORREF customColors[16] = { 0 }; cc.lStructSize = sizeof(cc); cc.hwndOwner = hwnd; cc.lpCustColors = customColors; cc.Flags = CC_FULLOPEN | CC_RGBINIT;
                     D2D1_COLOR_F* targetColor = (id == 3001) ? &g_panelMongolColor : (id == 3002) ? &g_panelChineseColor : (id == 3004) ? &g_panelBgColor : (id == 3008) ? &g_panelHighlightMongolColor : &g_panelHighlightChineseColor;
@@ -332,6 +340,7 @@ public:
         y += 45; CreateWindowW(L"STATIC", L"\u9762\u677F\u6B4C\u8BCD\u5B57\u4F53\u5927\u5C0F:", WS_CHILD | WS_VISIBLE, 20, y, labelW, 20, m_hwnd, nullptr, hInst, nullptr); m_hSliderFontSize = CreateWindowExW(0, TRACKBAR_CLASSW, L"", WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_NOTICKS, ctrlX, y - 5, 150, 30, m_hwnd, (HMENU)3005, hInst, nullptr); m_hLabelFontSize = CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE, ctrlX + 160, y, 50, 20, m_hwnd, nullptr, hInst, nullptr); SendMessage(m_hSliderFontSize, TBM_SETRANGE, TRUE, MAKELONG(10, 40)); SendMessage(m_hSliderFontSize, TBM_SETPOS, TRUE, g_panelFontSize); wchar_t buf[32]; swprintf_s(buf, L"%d", g_panelFontSize); SetWindowTextW(m_hLabelFontSize, buf);
         y += gap; CreateWindowW(L"STATIC", L"\u53CC\u8BED\u6B4C\u8BCD\u663E\u793A:", WS_CHILD | WS_VISIBLE, 20, y, labelW, 20, m_hwnd, nullptr, hInst, nullptr); m_hComboDisplayMode = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, ctrlX, y - 3, 200, 200, m_hwnd, (HMENU)3010, hInst, nullptr); SendMessage(m_hComboDisplayMode, CB_ADDSTRING, 0, (LPARAM)L"显示双语歌词（如果有）"); SendMessage(m_hComboDisplayMode, CB_ADDSTRING, 0, (LPARAM)L"仅显示蒙古文"); SendMessage(m_hComboDisplayMode, CB_ADDSTRING, 0, (LPARAM)L"仅显示中文翻译"); SendMessage(m_hComboDisplayMode, CB_SETCURSEL, g_panelDisplayMode, 0);
         y += gap; CreateWindowW(L"STATIC", L"\u80CC\u666F\u989C\u8272:", WS_CHILD | WS_VISIBLE, 20, y, labelW, 20, m_hwnd, nullptr, hInst, nullptr); m_hBtnColorBg = CreateWindowW(L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, ctrlX, y - 3, 80, 25, m_hwnd, (HMENU)3004, hInst, nullptr);
+        y += 30; m_hChkShowTip = CreateWindowW(L"BUTTON", L"\u663E\u793A\u72B6\u6001\u63D0\u793A", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, ctrlX, y, 200, 20, m_hwnd, (HMENU)3011, hInst, nullptr); SendMessage(m_hChkShowTip, BM_SETCHECK, g_panelShowTip ? BST_CHECKED : BST_UNCHECKED, 0);
 
         y += 60; HWND hTitleM = CreateWindowW(L"STATIC", L"蒙古文设置", WS_CHILD | WS_VISIBLE, 20, y, 100, 25, m_hwnd, nullptr, hInst, nullptr); SendMessage(hTitleM, WM_SETFONT, (WPARAM)m_hFontBold, TRUE); CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_ETCHEDHORZ, 120, y + 12, 320, 2, m_hwnd, nullptr, hInst, nullptr);
         y += 45; CreateWindowW(L"STATIC", L"\u8499\u53E4\u6587\u5B57\u4F53:", WS_CHILD | WS_VISIBLE, 20, y, labelW, 20, m_hwnd, nullptr, hInst, nullptr); m_hComboFontM = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, ctrlX, y - 3, 250, 200, m_hwnd, (HMENU)3006, hInst, nullptr); PopulateFontsCombo(m_hComboFontM, g_panelMongolFont);
@@ -356,6 +365,7 @@ public:
 
     virtual void apply() override {
         g_panelFontSize = (int)SendMessage(m_hSliderFontSize, TBM_GETPOS, 0, 0); g_panelDisplayMode = (int)SendMessage(m_hComboDisplayMode, CB_GETCURSEL, 0, 0);
+        g_panelShowTip = (SendMessage(m_hChkShowTip, BM_GETCHECK, 0, 0) == BST_CHECKED);
         int idxM = (int)SendMessage(m_hComboFontM, CB_GETCURSEL, 0, 0); if (idxM != CB_ERR) { wchar_t buf[256]; SendMessage(m_hComboFontM, CB_GETLBTEXT, idxM, (LPARAM)buf); g_panelMongolFont = buf; }
         int idxC = (int)SendMessage(m_hComboFontC, CB_GETCURSEL, 0, 0); if (idxC != CB_ERR) { wchar_t buf[256]; SendMessage(m_hComboFontC, CB_GETLBTEXT, idxC, (LPARAM)buf); g_panelChineseFont = buf; }
         HWND mainWnd = core_api::get_main_window(); if (mainWnd) PostMessage(mainWnd, WM_APP_SETTINGS_CHANGED, 0, 0); SavePanelSettings();
@@ -364,6 +374,7 @@ public:
 
     virtual void reset() override {
         SendMessage(m_hSliderFontSize, TBM_SETPOS, TRUE, 15); SetWindowTextW(m_hLabelFontSize, L"15"); SendMessage(m_hComboDisplayMode, CB_SETCURSEL, 0, 0); g_panelDisplayMode = 0;
+        g_panelShowTip = true; SendMessage(m_hChkShowTip, BM_SETCHECK, BST_CHECKED, 0);
 
         g_panelMongolFont = L"Mongolian Baiti"; g_panelChineseFont = L"Microsoft YaHei";
         int idxM = (int)SendMessage(m_hComboFontM, CB_FINDSTRINGEXACT, (WPARAM)-1, (LPARAM)L"Mongolian Baiti");

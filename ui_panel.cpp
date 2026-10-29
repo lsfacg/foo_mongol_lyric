@@ -38,16 +38,19 @@ D2D1_COLOR_F g_panelHighlightMongolColor = D2D1::ColorF(0.0f, 0.8f, 0.0f, 1.0f);
 D2D1_COLOR_F g_panelHighlightChineseColor = D2D1::ColorF(0.0f, 0.8f, 0.0f, 1.0f);
 D2D1_COLOR_F g_panelBgColor = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);
 int g_panelDisplayMode = 0;
+bool g_panelShowTip = true; // 【新增】面板歌词是否显示状态提示
 
 void LoadPanelSettings() {
     HKEY hKey;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, REG_PATH, 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
         DWORD type, size;
-        int fs = 15, dm = 0;
+        int fs = 15, dm = 0, tip = 1;
         size = sizeof(int);
         if (RegQueryValueExW(hKey, L"PanelFontSize", NULL, &type, (LPBYTE)&fs, &size) == ERROR_SUCCESS && type == REG_DWORD) g_panelFontSize = fs;
         size = sizeof(int);
         if (RegQueryValueExW(hKey, L"PanelDisplayMode", NULL, &type, (LPBYTE)&dm, &size) == ERROR_SUCCESS && type == REG_DWORD) g_panelDisplayMode = dm;
+        size = sizeof(int);
+        if (RegQueryValueExW(hKey, L"PanelShowTip", NULL, &type, (LPBYTE)&tip, &size) == ERROR_SUCCESS && type == REG_DWORD) g_panelShowTip = (tip == 1);
 
         wchar_t fontBuf[256] = { 0 };
         size = sizeof(fontBuf);
@@ -72,8 +75,10 @@ void SavePanelSettings() {
     if (RegCreateKeyExW(HKEY_CURRENT_USER, REG_PATH, 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
         int fs = g_panelFontSize;
         int dm = g_panelDisplayMode;
+        int tip = g_panelShowTip ? 1 : 0;
         RegSetValueExW(hKey, L"PanelFontSize", 0, REG_DWORD, (const BYTE*)&fs, sizeof(int));
         RegSetValueExW(hKey, L"PanelDisplayMode", 0, REG_DWORD, (const BYTE*)&dm, sizeof(int));
+        RegSetValueExW(hKey, L"PanelShowTip", 0, REG_DWORD, (const BYTE*)&tip, sizeof(int));
 
         RegSetValueExW(hKey, L"PanelMongolFont", 0, REG_SZ, (const BYTE*)g_panelMongolFont.c_str(), (g_panelMongolFont.length() + 1) * sizeof(wchar_t));
         RegSetValueExW(hKey, L"PanelChineseFont", 0, REG_SZ, (const BYTE*)g_panelChineseFont.c_str(), (g_panelChineseFont.length() + 1) * sizeof(wchar_t));
@@ -547,9 +552,6 @@ void MongolPanelInstance::LoadLyricsForCurrentTrack() {
 // ==========================================
 // 4. 全屏歌词核心绘制逻辑
 // ==========================================
-// ==========================================
-// 4. 全屏歌词核心绘制逻辑
-// ==========================================
 LRESULT FullScreenLyric::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
     PAINTSTRUCT ps; HDC hdc = BeginPaint(&ps);
     if (!m_pRenderTarget) {
@@ -566,11 +568,11 @@ LRESULT FullScreenLyric::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
 
         std::vector<PanelLyricLine> renderLyrics; int currentIdx = -1; double currentTime = GetPlaybackTime();
         if (GetLyrics().empty()) {
-            PanelLyricLine nl; nl.time = 0; nl.mongolText = playback_control::get()->is_playing() ? L"\u672A\u627E\u5230\u6B4C\u8BCD" : L"\u64AD\u653E\u5DF2\u505C\u6B62"; renderLyrics.push_back(nl); currentIdx = 0;
+            PanelLyricLine nl; nl.time = 0; nl.mongolText = g_panelShowTip ? (playback_control::get()->is_playing() ? L"\u672A\u627E\u5230\u6B4C\u8BCD" : L"\u64AD\u653E\u5DF2\u505C\u6B62") : L""; renderLyrics.push_back(nl); currentIdx = 0;
         }
         else {
             int tempIdx = -1; for (int i = 0; i < (int)GetLyrics().size(); i++) { if (currentTime >= GetLyrics()[i].time) tempIdx = i; else break; }
-            if (tempIdx < 0) { PanelLyricLine nl; nl.time = 0; nl.mongolText = L"\u51C6\u5907\u5C31\u7EEA"; renderLyrics.push_back(nl); currentIdx = 0; }
+            if (tempIdx < 0) { PanelLyricLine nl; nl.time = 0; nl.mongolText = g_panelShowTip ? L"\u51C6\u5907\u5C31\u7EEA" : L""; renderLyrics.push_back(nl); currentIdx = 0; }
             else { renderLyrics = GetLyrics(); currentIdx = tempIdx; }
         }
 
@@ -915,9 +917,6 @@ LRESULT MongolPanelInstance::OnSize(UINT, WPARAM, LPARAM, BOOL&) {
 // ==========================================
 // 6. 面板歌词核心绘制逻辑
 // ==========================================
-// ==========================================
-// 6. 面板歌词核心绘制逻辑
-// ==========================================
 LRESULT MongolPanelInstance::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
     PAINTSTRUCT ps;
     HDC hdc = BeginPaint(&ps);
@@ -948,11 +947,11 @@ LRESULT MongolPanelInstance::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
 
         std::vector<PanelLyricLine> renderLyrics; int currentIdx = -1; double currentTime = playback_control::get()->playback_get_position(); if (currentTime < 0) currentTime = 0;
         if (m_lyrics.empty()) {
-            PanelLyricLine nl; nl.time = 0; nl.mongolText = playback_control::get()->is_playing() ? L"\u672A\u627E\u5230\u6B4C\u8BCD" : L"\u64AD\u653E\u5DF2\u505C\u6B62"; renderLyrics.push_back(nl); currentIdx = 0;
+            PanelLyricLine nl; nl.time = 0; nl.mongolText = g_panelShowTip ? (playback_control::get()->is_playing() ? L"\u672A\u627E\u5230\u6B4C\u8BCD" : L"\u64AD\u653E\u5DF2\u505C\u6B62") : L""; renderLyrics.push_back(nl); currentIdx = 0;
         }
         else {
             int tempIdx = -1; for (int i = 0; i < (int)m_lyrics.size(); i++) { if (currentTime >= m_lyrics[i].time) tempIdx = i; else break; }
-            if (tempIdx < 0) { PanelLyricLine nl; nl.time = 0; nl.mongolText = L"\u51C6\u5907\u5C31\u7EEA"; renderLyrics.push_back(nl); currentIdx = 0; }
+            if (tempIdx < 0) { PanelLyricLine nl; nl.time = 0; nl.mongolText = g_panelShowTip ? L"\u51C6\u5907\u5C31\u7EEA" : L""; renderLyrics.push_back(nl); currentIdx = 0; }
             else { renderLyrics = m_lyrics; currentIdx = tempIdx; }
         }
 
