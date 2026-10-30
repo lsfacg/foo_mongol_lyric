@@ -1,5 +1,6 @@
 ﻿#include "stdafx.h"
 #include <windows.h>
+#include <commctrl.h>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -16,6 +17,7 @@
 
 #pragma comment(lib, "dwrite.lib")
 #pragma comment(lib, "d2d1.lib")
+#pragma comment(lib, "comctl32.lib")
 
 // ================= 外部变量 =================
 extern const GUID guid_preferences_page;
@@ -23,7 +25,7 @@ extern const GUID guid_pref_desktop;
 
 DECLARE_COMPONENT_VERSION(
     "\xE8\x92\x99\xE5\x8F\xA4\xE6\x96\x87\xE6\xAD\x8C\xE8\xAF\x8D",
-    "1.1.3",
+    "1.1.5",
     "Author: lsfacg\n"
     "A Desktop Lyric plugin for Traditional Mongolian.\n"
     "Special thanks to the Wucai Hulunbuir Children's Choir.\n"
@@ -33,7 +35,7 @@ DECLARE_COMPONENT_VERSION(
 bool g_isVisible = true;
 bool g_isLocked = false;
 bool g_isTopmost = true;
-bool g_desktopShowTip = true; // 【新增】桌面歌词是否显示状态提示
+bool g_desktopShowTip = true;
 HWND g_hwndLyrics = NULL;
 int g_displayMode = 0;
 int g_reload_flag = 0;
@@ -43,6 +45,10 @@ int g_windowHeight = 800;
 int g_fontSize = 40;
 bool g_isHovered = false;
 int g_hoveredButton = -1;
+
+bool g_isMenuOpen = false; // 右键菜单是否打开
+HWND g_hTooltip = NULL;    // ToolTip 句柄
+TOOLINFOW g_ti = { 0 };    // ToolTip 结构体
 
 double g_syncOffset = 0.115;
 
@@ -202,6 +208,17 @@ void LoadSettings(HWND hwnd) {
         float scale = (float)g_fontSize / 40.0f;
         g_windowWidth = (int)(250 * scale);
         g_windowHeight = (int)(800 * scale);
+
+        // 防丢边界检测
+        RECT rcScreen;
+        SystemParametersInfo(SPI_GETWORKAREA, 0, &rcScreen, 0);
+        bool onScreen = (x + g_windowWidth > rcScreen.left && x < rcScreen.right &&
+            y + g_windowHeight > rcScreen.top && y < rcScreen.bottom);
+        if (!onScreen) {
+            x = GetSystemMetrics(SM_CXSCREEN) - g_windowWidth - 50;
+            y = 150;
+            g_isVisible = true;
+        }
 
         SetWindowPos(hwnd, NULL, x, y, g_windowWidth, g_windowHeight, SWP_NOZORDER);
         RegCloseKey(hKey);
@@ -528,6 +545,21 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_CREATE:
         LoadSettings(hwnd);
         InitDWrite();
+
+        // 初始化 ToolTip
+        g_hTooltip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL,
+            WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, CW_USEDEFAULT, CW_USEDEFAULT,
+            CW_USEDEFAULT, CW_USEDEFAULT, hwnd, NULL, GetModuleHandle(NULL), NULL);
+        if (g_hTooltip) {
+            SetWindowPos(g_hTooltip, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            g_ti.cbSize = sizeof(TOOLINFOW);
+            g_ti.uFlags = TTF_TRACK | TTF_ABSOLUTE; // 纯手动控制
+            g_ti.hwnd = hwnd;
+            g_ti.uId = 1;
+            g_ti.lpszText = (LPWSTR)L"提示";
+            SendMessage(g_hTooltip, TTM_ADDTOOLW, 0, (LPARAM)&g_ti);
+        }
+
         ShowWindow(hwnd, g_isVisible ? SW_SHOW : SW_HIDE);
         SetTimer(hwnd, 1, 40, NULL);
         return 0;
@@ -621,6 +653,34 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (newHovered != g_hoveredButton) {
             g_hoveredButton = newHovered;
             InvalidateRect(hwnd, NULL, TRUE);
+
+            // 严格判断是否显示 ToolTip
+            if (g_hTooltip) {
+                if (g_hoveredButton != -1) {
+                    const wchar_t* tipText = L"";
+                    if (g_hoveredButton == 0) tipText = L"缩小字体";
+                    else if (g_hoveredButton == 1) tipText = L"放大字体";
+                    else if (g_hoveredButton == 2) tipText = L"设置";
+                    else if (g_hoveredButton == 3) tipText = L"关闭";
+
+                    g_ti.lpszText = (LPWSTR)tipText;
+                    SendMessage(g_hTooltip, TTM_UPDATETIPTEXTW, 0, (LPARAM)&g_ti);
+
+                    // 计算位置
+                    RECT rcWin; GetClientRect(hwnd, &rcWin);
+                    float btnW = 40.0f;
+                    float startX = (rcWin.right - btnW * 4) / 2.0f;
+                    POINT pt = { (LONG)(startX + g_hoveredButton * btnW + btnW / 2.0f), 55 };
+                    ClientToScreen(hwnd, &pt);
+                    SendMessage(g_hTooltip, TTM_TRACKPOSITION, 0, MAKELPARAM(pt.x, pt.y));
+
+                    SendMessage(g_hTooltip, TTM_TRACKACTIVATE, TRUE, (LPARAM)&g_ti);
+                }
+                else {
+                    // 只要鼠标不在按钮上，立刻隐藏
+                    SendMessage(g_hTooltip, TTM_TRACKACTIVATE, FALSE, (LPARAM)&g_ti);
+                }
+            }
         }
 
         if (!g_isHovered) {
@@ -634,8 +694,11 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         return 0;
     }
     case WM_MOUSELEAVE:
-        g_isHovered = false;
-        g_hoveredButton = -1;
+        if (!g_isMenuOpen) {
+            g_isHovered = false;
+            g_hoveredButton = -1;
+        }
+        if (g_hTooltip) SendMessage(g_hTooltip, TTM_TRACKACTIVATE, FALSE, (LPARAM)&g_ti);
         InvalidateRect(hwnd, NULL, TRUE);
         return 0;
     case WM_LBUTTONDOWN:
@@ -664,6 +727,12 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_CONTEXTMENU:
     {
         if (g_isLocked) return 0;
+
+        // 右键菜单弹出时，锁住背景
+        g_isMenuOpen = true;
+        g_isHovered = true;
+        if (g_hTooltip) SendMessage(g_hTooltip, TTM_TRACKACTIVATE, FALSE, (LPARAM)&g_ti);
+
         HMENU hMenu = CreatePopupMenu();
         HMENU hSubMenu = CreatePopupMenu();
 
@@ -685,6 +754,15 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, hwnd, NULL);
         DestroyMenu(hSubMenu);
         DestroyMenu(hMenu);
+
+        // 菜单关闭，解锁状态
+        g_isMenuOpen = false;
+
+        POINT cursorPt; GetCursorPos(&cursorPt);
+        RECT rcWin; GetWindowRect(hwnd, &rcWin);
+        if (!PtInRect(&rcWin, cursorPt)) {
+            g_isHovered = false;
+        }
 
         if (cmd == 1) {
             g_isVisible = !g_isVisible;
@@ -721,6 +799,7 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             SaveSettings(hwnd);
             InvalidateRect(hwnd, NULL, TRUE);
         }
+        InvalidateRect(hwnd, NULL, TRUE);
         return 0;
     }
     case WM_PAINT:
@@ -757,6 +836,7 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         g_pMongolOutlineBrush->SetColor(g_mongolOutlineColor);
         g_pChineseOutlineBrush->SetColor(g_chineseOutlineColor);
 
+        // 瞬间显示背景
         if (g_isHovered) {
             D2D1_RECT_F bgRect = D2D1::RectF(10.0f, 10.0f, (float)width - 10.0f, (float)height - 10.0f);
             g_pDCRenderTarget->FillRectangle(bgRect, g_pHoverBrush);
@@ -1026,6 +1106,12 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_DESTROY:
         KillTimer(hwnd, 1);
         SaveSettings(hwnd);
+
+        if (g_hTooltip) {
+            DestroyWindow(g_hTooltip);
+            g_hTooltip = NULL;
+        }
+
         if (g_pMongolBrush) g_pMongolBrush->Release();
         if (g_pChineseBrush) g_pChineseBrush->Release();
         if (g_pMongolOutlineBrush) g_pMongolOutlineBrush->Release();

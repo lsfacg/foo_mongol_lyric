@@ -17,13 +17,15 @@
 extern int g_fontSize; extern std::wstring g_mongolFont; extern std::wstring g_chineseFont; extern D2D1_COLOR_F g_mongolColor; extern D2D1_COLOR_F g_chineseColor;
 extern D2D1_COLOR_F g_mongolOutlineColor; extern D2D1_COLOR_F g_chineseOutlineColor; extern float g_mongolOutlineSize; extern float g_chineseOutlineSize;
 extern int g_displayMode; extern bool g_isVisible; extern bool g_isLocked; extern bool g_isTopmost;
-extern bool g_desktopShowTip; // 【新增】桌面歌词状态提示开关
+extern bool g_desktopShowTip;
+extern HWND g_hwndLyrics;
 
 extern int g_panelFontSize; extern std::wstring g_panelMongolFont; extern std::wstring g_panelChineseFont; extern D2D1_COLOR_F g_panelMongolColor; extern D2D1_COLOR_F g_panelChineseColor;
 extern D2D1_COLOR_F g_panelHighlightMongolColor; extern D2D1_COLOR_F g_panelHighlightChineseColor; extern D2D1_COLOR_F g_panelBgColor; extern int g_panelDisplayMode;
-extern bool g_panelShowTip; // 【新增】面板歌词状态提示开关
+extern bool g_panelShowTip;
 
 void ApplySettingsAndRefresh(); extern void SavePanelSettings();
+extern void SaveSettings(HWND hwnd);
 #define WM_APP_SETTINGS_CHANGED (WM_APP + 1)
 
 extern const GUID guid_preferences_page = { 0x9C3D2A1B, 0x8B4E, 0x4C2D,{ 0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x1A, 0x2B } };
@@ -76,12 +78,10 @@ private:
         if (pThis) {
             if (msg == WM_SIZE) {
                 RECT rc; GetClientRect(hwnd, &rc);
-
                 if (pThis->m_hTitle) {
                     int titleW = 400; int titleH = 50;
                     SetWindowPos(pThis->m_hTitle, NULL, (rc.right - titleW) / 2 - 12, (rc.bottom - titleH) / 2 - 105, titleW, titleH, SWP_NOZORDER);
                 }
-
                 if (pThis->m_hLink && pThis->m_hAuthor) {
                     int bottomY = rc.bottom - 30;
                     SetWindowPos(pThis->m_hLink, NULL, 20, bottomY, 100, 30, SWP_NOZORDER);
@@ -160,10 +160,13 @@ private:
     HWND m_hwnd; preferences_page_callback::ptr m_callback;
     HWND m_hSliderFontSize, m_hLabelFontSize, m_hComboDisplayMode;
     HWND m_hChkVisible, m_hChkLock, m_hChkTopmost;
-    HWND m_hChkShowTip; // 【新增】
+    HWND m_hChkShowTip;
     HWND m_hComboFontM, m_hBtnColorM, m_hBtnOutlineColorM, m_hSliderOutlineM, m_hLabelOutlineM;
     HWND m_hComboFontC, m_hBtnColorC, m_hBtnOutlineColorC, m_hSliderOutlineC, m_hLabelOutlineC;
     bool m_dirty = false; WNDPROC m_oldWndProc = nullptr; HFONT m_hFontBold;
+
+    // 【新增】暂存颜色变量
+    D2D1_COLOR_F m_tempMongolColor, m_tempChineseColor, m_tempMongolOutlineColor, m_tempChineseOutlineColor;
 
     static LRESULT CALLBACK PrefsWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         MongolPrefsDesktopInstance* pThis = (MongolPrefsDesktopInstance*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
@@ -172,7 +175,8 @@ private:
             else if (msg == WM_DRAWITEM) {
                 LPDRAWITEMSTRUCT pDIS = (LPDRAWITEMSTRUCT)lp;
                 if (pDIS->CtlID == 2001 || pDIS->CtlID == 2003 || pDIS->CtlID == 2002 || pDIS->CtlID == 2004) {
-                    D2D1_COLOR_F color = (pDIS->CtlID == 2001) ? g_mongolColor : (pDIS->CtlID == 2003) ? g_mongolOutlineColor : (pDIS->CtlID == 2002) ? g_chineseColor : g_chineseOutlineColor;
+                    // 【修改】读取临时颜色
+                    D2D1_COLOR_F color = (pDIS->CtlID == 2001) ? pThis->m_tempMongolColor : (pDIS->CtlID == 2003) ? pThis->m_tempMongolOutlineColor : (pDIS->CtlID == 2002) ? pThis->m_tempChineseColor : pThis->m_tempChineseOutlineColor;
                     HBRUSH hBrush = CreateSolidBrush(RGB((BYTE)(color.r * 255), (BYTE)(color.g * 255), (BYTE)(color.b * 255))); FillRect(pDIS->hDC, &pDIS->rcItem, hBrush); DeleteObject(hBrush);
                     FrameRect(pDIS->hDC, &pDIS->rcItem, (HBRUSH)GetStockObject(BLACK_BRUSH)); if (pDIS->itemState & ODS_SELECTED) { RECT rc = pDIS->rcItem; InflateRect(&rc, -1, -1); DrawFocusRect(pDIS->hDC, &rc); } return TRUE;
                 }
@@ -196,7 +200,8 @@ private:
                 if ((id == 1003 && code == CBN_SELCHANGE) || (id == 1004 && code == CBN_SELCHANGE) || (id == 1005 && code == CBN_SELCHANGE) || ((id == 1007 || id == 1008 || id == 1009 || id == 1010) && code == BN_CLICKED)) { pThis->m_dirty = true; if (pThis->m_callback.is_valid()) pThis->m_callback->on_state_changed(); }
                 else if ((id == 2001 || id == 2003 || id == 2002 || id == 2004) && code == BN_CLICKED) {
                     CHOOSECOLORW cc = { 0 }; static COLORREF customColors[16] = { 0 }; cc.lStructSize = sizeof(cc); cc.hwndOwner = hwnd; cc.lpCustColors = customColors; cc.Flags = CC_FULLOPEN | CC_RGBINIT;
-                    D2D1_COLOR_F* targetColor = (id == 2001) ? &g_mongolColor : (id == 2003) ? &g_mongolOutlineColor : (id == 2002) ? &g_chineseColor : &g_chineseOutlineColor;
+                    // 【修改】指向临时颜色
+                    D2D1_COLOR_F* targetColor = (id == 2001) ? &pThis->m_tempMongolColor : (id == 2003) ? &pThis->m_tempMongolOutlineColor : (id == 2002) ? &pThis->m_tempChineseColor : &pThis->m_tempChineseOutlineColor;
                     cc.rgbResult = RGB((BYTE)(targetColor->r * 255), (BYTE)(targetColor->g * 255), (BYTE)(targetColor->b * 255));
                     if (ChooseColorW(&cc)) { *targetColor = D2D1::ColorF(GetRValue(cc.rgbResult) / 255.0f, GetGValue(cc.rgbResult) / 255.0f, GetBValue(cc.rgbResult) / 255.0f); InvalidateRect((HWND)lp, NULL, TRUE); pThis->m_dirty = true; if (pThis->m_callback.is_valid()) pThis->m_callback->on_state_changed(); }
                 }
@@ -207,6 +212,12 @@ private:
     }
 public:
     MongolPrefsDesktopInstance(HWND p_parent, preferences_page_callback::ptr p_callback) : m_hwnd(nullptr), m_callback(p_callback), m_hFontBold(nullptr) {
+        // 【新增】初始化临时颜色
+        m_tempMongolColor = g_mongolColor;
+        m_tempChineseColor = g_chineseColor;
+        m_tempMongolOutlineColor = g_mongolOutlineColor;
+        m_tempChineseOutlineColor = g_chineseOutlineColor;
+
         HINSTANCE hInst = core_api::get_my_instance(); m_hwnd = CreateWindowExW(0, WC_DIALOG, L"", WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_VSCROLL, 0, 0, 500, 500, p_parent, nullptr, hInst, nullptr);
         if (m_hwnd) { SetWindowLongPtr(m_hwnd, GWLP_USERDATA, (LONG_PTR)this); m_oldWndProc = (WNDPROC)SetWindowLongPtr(m_hwnd, GWLP_WNDPROC, (LONG_PTR)PrefsWndProc); }
         m_hFontBold = CreateFontW(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Microsoft YaHei");
@@ -251,6 +262,13 @@ public:
         g_mongolOutlineSize = (int)SendMessage(m_hSliderOutlineM, TBM_GETPOS, 0, 0) / 10.0f;
         int idxC = (int)SendMessage(m_hComboFontC, CB_GETCURSEL, 0, 0); if (idxC != CB_ERR) { wchar_t buf[256]; SendMessage(m_hComboFontC, CB_GETLBTEXT, idxC, (LPARAM)buf); g_chineseFont = buf; }
         g_chineseOutlineSize = (int)SendMessage(m_hSliderOutlineC, TBM_GETPOS, 0, 0) / 10.0f;
+
+        // 【修改】点击应用时，生效颜色
+        g_mongolColor = m_tempMongolColor;
+        g_chineseColor = m_tempChineseColor;
+        g_mongolOutlineColor = m_tempMongolOutlineColor;
+        g_chineseOutlineColor = m_tempChineseOutlineColor;
+
         ApplySettingsAndRefresh(); m_dirty = false; if (m_callback.is_valid()) m_callback->on_state_changed();
     }
 
@@ -267,8 +285,25 @@ public:
         if (idxFontC == CB_ERR) idxFontC = (int)SendMessage(m_hComboFontC, CB_FINDSTRINGEXACT, (WPARAM)-1, (LPARAM)L"Microsoft YaHei UI");
         SendMessage(m_hComboFontC, CB_SETCURSEL, (idxFontC != CB_ERR) ? idxFontC : 0, 0);
 
-        SendMessage(m_hSliderOutlineM, TBM_SETPOS, TRUE, 7); SetWindowTextW(m_hLabelOutlineM, L"0.7"); g_mongolColor = D2D1::ColorF(0.0f, 1.0f, 0.0f, 1.0f); g_mongolOutlineColor = D2D1::ColorF(0, 0, 0, 1); InvalidateRect(m_hBtnColorM, NULL, TRUE); InvalidateRect(m_hBtnOutlineColorM, NULL, TRUE);
-        SendMessage(m_hSliderOutlineC, TBM_SETPOS, TRUE, 7); SetWindowTextW(m_hLabelOutlineC, L"0.7"); g_chineseColor = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f); g_chineseOutlineColor = D2D1::ColorF(0, 0, 0, 1); InvalidateRect(m_hBtnColorC, NULL, TRUE); InvalidateRect(m_hBtnOutlineColorC, NULL, TRUE);
+        SendMessage(m_hSliderOutlineM, TBM_SETPOS, TRUE, 7); SetWindowTextW(m_hLabelOutlineM, L"0.7");
+        SendMessage(m_hSliderOutlineC, TBM_SETPOS, TRUE, 7); SetWindowTextW(m_hLabelOutlineC, L"0.7");
+
+        // 【修改】只重置临时颜色和UI
+        m_tempMongolColor = D2D1::ColorF(0.0f, 1.0f, 0.0f, 1.0f);
+        m_tempMongolOutlineColor = D2D1::ColorF(0, 0, 0, 1);
+        m_tempChineseColor = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);
+        m_tempChineseOutlineColor = D2D1::ColorF(0, 0, 0, 1);
+
+        InvalidateRect(m_hBtnColorM, NULL, TRUE); InvalidateRect(m_hBtnOutlineColorM, NULL, TRUE);
+        InvalidateRect(m_hBtnColorC, NULL, TRUE); InvalidateRect(m_hBtnOutlineColorC, NULL, TRUE);
+
+        // 【新增：重置时，让桌面歌词窗口也归位到屏幕右侧】
+        if (g_hwndLyrics) {
+            int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+            int defaultX = screenWidth - 250 - 50;
+            SetWindowPos(g_hwndLyrics, NULL, defaultX, 150, 250, 800, SWP_NOZORDER);
+        }
+
         m_dirty = true; if (m_callback.is_valid()) m_callback->on_state_changed();
     }
 };
@@ -288,8 +323,11 @@ static preferences_page_factory_t<MongolPrefsDesktopPage> g_desktop_page_factory
 class MongolPrefsPanelInstance : public preferences_page_instance {
 private:
     HWND m_hwnd, m_hSliderFontSize, m_hLabelFontSize, m_hComboDisplayMode, m_hBtnColorBg, m_hComboFontM, m_hBtnColorM, m_hBtnColorHM, m_hComboFontC, m_hBtnColorC, m_hBtnColorHC;
-    HWND m_hChkShowTip; // 【新增】
+    HWND m_hChkShowTip;
     preferences_page_callback::ptr m_callback; bool m_dirty = false; WNDPROC m_oldWndProc = nullptr; HFONT m_hFontBold;
+
+    // 【新增】暂存颜色变量
+    D2D1_COLOR_F m_tempPanelMongolColor, m_tempPanelChineseColor, m_tempPanelHighlightMongolColor, m_tempPanelHighlightChineseColor, m_tempPanelBgColor;
 
     static LRESULT CALLBACK PrefsWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         MongolPrefsPanelInstance* pThis = (MongolPrefsPanelInstance*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
@@ -298,7 +336,8 @@ private:
             else if (msg == WM_DRAWITEM) {
                 LPDRAWITEMSTRUCT pDIS = (LPDRAWITEMSTRUCT)lp;
                 if (pDIS->CtlID == 3001 || pDIS->CtlID == 3002 || pDIS->CtlID == 3004 || pDIS->CtlID == 3008 || pDIS->CtlID == 3009) {
-                    D2D1_COLOR_F color = (pDIS->CtlID == 3001) ? g_panelMongolColor : (pDIS->CtlID == 3002) ? g_panelChineseColor : (pDIS->CtlID == 3004) ? g_panelBgColor : (pDIS->CtlID == 3008) ? g_panelHighlightMongolColor : g_panelHighlightChineseColor;
+                    // 【修改】读取临时颜色
+                    D2D1_COLOR_F color = (pDIS->CtlID == 3001) ? pThis->m_tempPanelMongolColor : (pDIS->CtlID == 3002) ? pThis->m_tempPanelChineseColor : (pDIS->CtlID == 3004) ? pThis->m_tempPanelBgColor : (pDIS->CtlID == 3008) ? pThis->m_tempPanelHighlightMongolColor : pThis->m_tempPanelHighlightChineseColor;
                     HBRUSH hBrush = CreateSolidBrush(RGB((BYTE)(color.r * 255), (BYTE)(color.g * 255), (BYTE)(color.b * 255))); FillRect(pDIS->hDC, &pDIS->rcItem, hBrush); DeleteObject(hBrush);
                     FrameRect(pDIS->hDC, &pDIS->rcItem, (HBRUSH)GetStockObject(BLACK_BRUSH)); return TRUE;
                 }
@@ -321,7 +360,8 @@ private:
                 else if (id == 3011 && code == BN_CLICKED) { pThis->m_dirty = true; if (pThis->m_callback.is_valid()) pThis->m_callback->on_state_changed(); }
                 else if ((id == 3001 || id == 3002 || id == 3004 || id == 3008 || id == 3009) && code == BN_CLICKED) {
                     CHOOSECOLORW cc = { 0 }; static COLORREF customColors[16] = { 0 }; cc.lStructSize = sizeof(cc); cc.hwndOwner = hwnd; cc.lpCustColors = customColors; cc.Flags = CC_FULLOPEN | CC_RGBINIT;
-                    D2D1_COLOR_F* targetColor = (id == 3001) ? &g_panelMongolColor : (id == 3002) ? &g_panelChineseColor : (id == 3004) ? &g_panelBgColor : (id == 3008) ? &g_panelHighlightMongolColor : &g_panelHighlightChineseColor;
+                    // 【修改】指向临时颜色
+                    D2D1_COLOR_F* targetColor = (id == 3001) ? &pThis->m_tempPanelMongolColor : (id == 3002) ? &pThis->m_tempPanelChineseColor : (id == 3004) ? &pThis->m_tempPanelBgColor : (id == 3008) ? &pThis->m_tempPanelHighlightMongolColor : &pThis->m_tempPanelHighlightChineseColor;
                     cc.rgbResult = RGB((BYTE)(targetColor->r * 255), (BYTE)(targetColor->g * 255), (BYTE)(targetColor->b * 255));
                     if (ChooseColorW(&cc)) { *targetColor = D2D1::ColorF(GetRValue(cc.rgbResult) / 255.0f, GetGValue(cc.rgbResult) / 255.0f, GetBValue(cc.rgbResult) / 255.0f); InvalidateRect((HWND)lp, NULL, TRUE); pThis->m_dirty = true; if (pThis->m_callback.is_valid()) pThis->m_callback->on_state_changed(); }
                 }
@@ -332,6 +372,13 @@ private:
     }
 public:
     MongolPrefsPanelInstance(HWND p_parent, preferences_page_callback::ptr p_callback) : m_hwnd(nullptr), m_callback(p_callback), m_hFontBold(nullptr) {
+        // 【新增】初始化临时颜色
+        m_tempPanelMongolColor = g_panelMongolColor;
+        m_tempPanelChineseColor = g_panelChineseColor;
+        m_tempPanelHighlightMongolColor = g_panelHighlightMongolColor;
+        m_tempPanelHighlightChineseColor = g_panelHighlightChineseColor;
+        m_tempPanelBgColor = g_panelBgColor;
+
         HINSTANCE hInst = core_api::get_my_instance(); m_hwnd = CreateWindowExW(0, WC_DIALOG, L"", WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_VSCROLL, 0, 0, 480, 350, p_parent, nullptr, hInst, nullptr);
         if (m_hwnd) { SetWindowLongPtr(m_hwnd, GWLP_USERDATA, (LONG_PTR)this); m_oldWndProc = (WNDPROC)SetWindowLongPtr(m_hwnd, GWLP_WNDPROC, (LONG_PTR)PrefsWndProc); }
         m_hFontBold = CreateFontW(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Microsoft YaHei");
@@ -368,6 +415,14 @@ public:
         g_panelShowTip = (SendMessage(m_hChkShowTip, BM_GETCHECK, 0, 0) == BST_CHECKED);
         int idxM = (int)SendMessage(m_hComboFontM, CB_GETCURSEL, 0, 0); if (idxM != CB_ERR) { wchar_t buf[256]; SendMessage(m_hComboFontM, CB_GETLBTEXT, idxM, (LPARAM)buf); g_panelMongolFont = buf; }
         int idxC = (int)SendMessage(m_hComboFontC, CB_GETCURSEL, 0, 0); if (idxC != CB_ERR) { wchar_t buf[256]; SendMessage(m_hComboFontC, CB_GETLBTEXT, idxC, (LPARAM)buf); g_panelChineseFont = buf; }
+
+        // 【修改】点击应用时，生效颜色
+        g_panelMongolColor = m_tempPanelMongolColor;
+        g_panelChineseColor = m_tempPanelChineseColor;
+        g_panelHighlightMongolColor = m_tempPanelHighlightMongolColor;
+        g_panelHighlightChineseColor = m_tempPanelHighlightChineseColor;
+        g_panelBgColor = m_tempPanelBgColor;
+
         HWND mainWnd = core_api::get_main_window(); if (mainWnd) PostMessage(mainWnd, WM_APP_SETTINGS_CHANGED, 0, 0); SavePanelSettings();
         m_dirty = false; if (m_callback.is_valid()) m_callback->on_state_changed();
     }
@@ -385,7 +440,13 @@ public:
         if (idxC == CB_ERR) idxC = (int)SendMessage(m_hComboFontC, CB_FINDSTRINGEXACT, (WPARAM)-1, (LPARAM)L"Microsoft YaHei UI");
         SendMessage(m_hComboFontC, CB_SETCURSEL, (idxC != CB_ERR) ? idxC : 0, 0);
 
-        g_panelMongolColor = D2D1::ColorF(0.0f, 0.0f, 0.0f, 1.0f); g_panelChineseColor = D2D1::ColorF(0.0f, 0.0f, 0.0f, 1.0f); g_panelHighlightMongolColor = D2D1::ColorF(0.0f, 0.8f, 0.0f, 1.0f); g_panelHighlightChineseColor = D2D1::ColorF(0.0f, 0.8f, 0.0f, 1.0f); g_panelBgColor = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);
+        // 【修改】只重置临时颜色和UI
+        m_tempPanelMongolColor = D2D1::ColorF(0.0f, 0.0f, 0.0f, 1.0f);
+        m_tempPanelChineseColor = D2D1::ColorF(0.0f, 0.0f, 0.0f, 1.0f);
+        m_tempPanelHighlightMongolColor = D2D1::ColorF(0.0f, 0.8f, 0.0f, 1.0f);
+        m_tempPanelHighlightChineseColor = D2D1::ColorF(0.0f, 0.8f, 0.0f, 1.0f);
+        m_tempPanelBgColor = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);
+
         InvalidateRect(m_hBtnColorM, NULL, TRUE); InvalidateRect(m_hBtnColorC, NULL, TRUE); InvalidateRect(m_hBtnColorHM, NULL, TRUE); InvalidateRect(m_hBtnColorHC, NULL, TRUE); InvalidateRect(m_hBtnColorBg, NULL, TRUE);
         SavePanelSettings(); m_dirty = true; if (m_callback.is_valid()) m_callback->on_state_changed();
     }
