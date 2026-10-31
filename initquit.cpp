@@ -25,7 +25,7 @@ extern const GUID guid_pref_desktop;
 
 DECLARE_COMPONENT_VERSION(
     "\xE8\x92\x99\xE5\x8F\xA4\xE6\x96\x87\xE6\xAD\x8C\xE8\xAF\x8D",
-    "1.1.5",
+    "1.1.6",
     "Author: lsfacg\n"
     "A Desktop Lyric plugin for Traditional Mongolian.\n"
     "Special thanks to the Wucai Hulunbuir Children's Choir.\n"
@@ -546,12 +546,21 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         LoadSettings(hwnd);
         InitDWrite();
 
+        // 【修改点2】窗口创建完毕后，根据配置决定是否置顶（不用硬编码强制置顶）
+        if (g_isTopmost) {
+            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+        else {
+            SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+
         // 初始化 ToolTip
-        g_hTooltip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL,
+        // 【修改点3】去掉了 ToolTip 创建时的 WS_EX_TOPMOST，改用 WS_EX_NOACTIVATE
+        g_hTooltip = CreateWindowExW(WS_EX_NOACTIVATE, TOOLTIPS_CLASSW, NULL,
             WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, CW_USEDEFAULT, CW_USEDEFAULT,
             CW_USEDEFAULT, CW_USEDEFAULT, hwnd, NULL, GetModuleHandle(NULL), NULL);
         if (g_hTooltip) {
-            SetWindowPos(g_hTooltip, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            // 【修改点4】去掉了 ToolTip 的 SetWindowPos 强制置顶，让它自然跟随你的歌词窗口即可
             g_ti.cbSize = sizeof(TOOLINFOW);
             g_ti.uFlags = TTF_TRACK | TTF_ABSOLUTE; // 纯手动控制
             g_ti.hwnd = hwnd;
@@ -1141,8 +1150,8 @@ DWORD WINAPI WindowThread(LPVOID lpParam) {
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     RegisterClassW(&wc);
 
-    DWORD exStyle = WS_EX_TOOLWINDOW | WS_EX_LAYERED;
-    if (g_isTopmost) exStyle |= WS_EX_TOPMOST;
+    // 【修改点1】去掉了 WS_EX_TOPMOST，加上 WS_EX_NOACTIVATE，防止抢焦点和插队
+    DWORD exStyle = WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE;
     if (g_isLocked) exStyle |= WS_EX_TRANSPARENT;
 
     g_hwndLyrics = CreateWindowExW(
