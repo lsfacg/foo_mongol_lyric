@@ -19,6 +19,8 @@
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "comctl32.lib")
 
+#define WM_APP_REFRESH (WM_APP + 1)
+
 // ================= 外部变量 =================
 extern const GUID guid_preferences_page;
 extern const GUID guid_pref_desktop;
@@ -654,6 +656,13 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         SaveSettings(hwnd);
         return 0;
 
+    case WM_APP_REFRESH:
+    {
+        InvalidateRect(hwnd, NULL, FALSE);
+        UpdateWindow(hwnd);
+        return 0;
+    }
+
     case WM_MOUSEMOVE:
     {
         int mouseX = GET_X_LPARAM(lParam);
@@ -718,9 +727,9 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (!g_isMenuOpen) {
             g_isHovered = false;
             g_hoveredButton = -1;
+            InvalidateRect(hwnd, NULL, TRUE);
         }
         if (g_hTooltip) SendMessage(g_hTooltip, TTM_TRACKACTIVATE, FALSE, (LPARAM)&g_ti);
-        InvalidateRect(hwnd, NULL, TRUE);
         return 0;
     }
 
@@ -744,7 +753,23 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             return 0;
         }
 
-        if (!g_isLocked) { ReleaseCapture(); SendMessage(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0); }
+        if (!g_isLocked) {
+            ReleaseCapture();
+            SendMessage(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+
+            // 【核心修复】拖拽结束后，如果鼠标还在窗口内，强制恢复悬停状态
+            POINT pt; GetCursorPos(&pt);
+            RECT rcWin; GetWindowRect(hwnd, &rcWin);
+            if (PtInRect(&rcWin, pt)) {
+                g_isHovered = true;
+                g_hoveredButton = -1;
+                TRACKMOUSEEVENT tme = { sizeof(TRACKMOUSEEVENT) };
+                tme.dwFlags = TME_LEAVE;
+                tme.hwndTrack = hwnd;
+                TrackMouseEvent(&tme);
+                InvalidateRect(hwnd, NULL, TRUE);
+            }
+        }
         return 0;
     }
 
@@ -754,6 +779,9 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
         g_isMenuOpen = true;
         g_isHovered = true;
+        InvalidateRect(hwnd, NULL, FALSE);
+        UpdateWindow(hwnd);
+
         if (g_hTooltip) SendMessage(g_hTooltip, TTM_TRACKACTIVATE, FALSE, (LPARAM)&g_ti);
 
         HMENU hMenu = CreatePopupMenu();
@@ -774,16 +802,39 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         AppendMenuW(hMenu, MF_STRING, 5, L"\u684C\u9762\u6B4C\u8BCD\u8BBE\u7F6E");
 
         POINT pt; GetCursorPos(&pt);
+
+        // 弹出菜单前，暂时去掉 NOACTIVATE，强行获取前台，让系统能捕获外部点击
+        LONG_PTR exStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+        SetWindowLongPtr(hwnd, GWL_EXSTYLE, exStyle & ~WS_EX_NOACTIVATE);
+        SetForegroundWindow(hwnd);
+
         int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, hwnd, NULL);
+
+        // 菜单关闭后，恢复无焦点属性
+        SetWindowLongPtr(hwnd, GWL_EXSTYLE, exStyle);
+        SetWindowPos(hwnd, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+
         DestroyMenu(hSubMenu);
         DestroyMenu(hMenu);
 
         g_isMenuOpen = false;
 
+        // 只看鼠标最后停在哪里。在窗口内就保持背景，在窗口外就清空背景
         POINT cursorPt; GetCursorPos(&cursorPt);
         RECT rcWin; GetWindowRect(hwnd, &rcWin);
-        if (!PtInRect(&rcWin, cursorPt)) {
+        bool isOutsideWindow = !PtInRect(&rcWin, cursorPt);
+
+        if (isOutsideWindow) {
             g_isHovered = false;
+            g_hoveredButton = -1;
+            PostMessage(hwnd, WM_APP_REFRESH, 0, 0);
+        }
+        else {
+            g_isHovered = true;
+            TRACKMOUSEEVENT tme = { sizeof(TRACKMOUSEEVENT) };
+            tme.dwFlags = TME_LEAVE;
+            tme.hwndTrack = hwnd;
+            TrackMouseEvent(&tme);
         }
 
         if (cmd == 1) {
@@ -793,10 +844,10 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         }
         else if (cmd == 2) {
             g_isLocked = !g_isLocked;
-            LONG_PTR exStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
-            if (g_isLocked) exStyle |= WS_EX_TRANSPARENT;
-            else exStyle &= ~WS_EX_TRANSPARENT;
-            SetWindowLongPtr(hwnd, GWL_EXSTYLE, exStyle);
+            LONG_PTR lockStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+            if (g_isLocked) lockStyle |= WS_EX_TRANSPARENT;
+            else lockStyle &= ~WS_EX_TRANSPARENT;
+            SetWindowLongPtr(hwnd, GWL_EXSTYLE, lockStyle);
             SetWindowPos(hwnd, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
             SaveSettings(hwnd);
         }
@@ -822,11 +873,13 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         else if (cmd >= 10 && cmd <= 12) {
             g_displayMode = cmd - 10;
             SaveSettings(hwnd);
-            InvalidateRect(hwnd, NULL, TRUE);
         }
-        InvalidateRect(hwnd, NULL, TRUE);
+
+        if (!isOutsideWindow) {
+            RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ERASE);
+        }
         return 0;
-    } // 【关键大括号结束】
+    }
 
     case WM_PAINT:
     {
@@ -1169,7 +1222,6 @@ DWORD WINAPI WindowThread(LPVOID lpParam) {
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     RegisterClassW(&wc);
 
-    // 【修改点1】去掉了 WS_EX_TOPMOST，加上 WS_EX_NOACTIVATE，防止抢焦点和插队
     DWORD exStyle = WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE;
     if (g_isLocked) exStyle |= WS_EX_TRANSPARENT;
 
