@@ -39,6 +39,8 @@ D2D1_COLOR_F g_panelHighlightChineseColor = D2D1::ColorF(0.0f, 0.8f, 0.0f, 1.0f)
 D2D1_COLOR_F g_panelBgColor = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);
 int g_panelDisplayMode = 0;
 bool g_panelShowTip = true; // 【新增】面板歌词是否显示状态提示
+int g_panelOffsetX = 0;             // 【新增】窗口歌词水平位置偏移（像素）
+int g_panelFullScreenOffsetX = 0;   // 【新增】全屏歌词水平位置偏移（像素）
 
 void LoadPanelSettings() {
     HKEY hKey;
@@ -51,6 +53,12 @@ void LoadPanelSettings() {
         if (RegQueryValueExW(hKey, L"PanelDisplayMode", NULL, &type, (LPBYTE)&dm, &size) == ERROR_SUCCESS && type == REG_DWORD) g_panelDisplayMode = dm;
         size = sizeof(int);
         if (RegQueryValueExW(hKey, L"PanelShowTip", NULL, &type, (LPBYTE)&tip, &size) == ERROR_SUCCESS && type == REG_DWORD) g_panelShowTip = (tip == 1);
+
+        int offsetX = 0, fsOffsetX = 0;
+        size = sizeof(int);
+        if (RegQueryValueExW(hKey, L"PanelOffsetX", NULL, &type, (LPBYTE)&offsetX, &size) == ERROR_SUCCESS && type == REG_DWORD) g_panelOffsetX = offsetX;
+        size = sizeof(int);
+        if (RegQueryValueExW(hKey, L"PanelFullScreenOffsetX", NULL, &type, (LPBYTE)&fsOffsetX, &size) == ERROR_SUCCESS && type == REG_DWORD) g_panelFullScreenOffsetX = fsOffsetX;
 
         wchar_t fontBuf[256] = { 0 };
         size = sizeof(fontBuf);
@@ -76,9 +84,13 @@ void SavePanelSettings() {
         int fs = g_panelFontSize;
         int dm = g_panelDisplayMode;
         int tip = g_panelShowTip ? 1 : 0;
+        int offsetX = g_panelOffsetX;
+        int fsOffsetX = g_panelFullScreenOffsetX;
         RegSetValueExW(hKey, L"PanelFontSize", 0, REG_DWORD, (const BYTE*)&fs, sizeof(int));
         RegSetValueExW(hKey, L"PanelDisplayMode", 0, REG_DWORD, (const BYTE*)&dm, sizeof(int));
         RegSetValueExW(hKey, L"PanelShowTip", 0, REG_DWORD, (const BYTE*)&tip, sizeof(int));
+        RegSetValueExW(hKey, L"PanelOffsetX", 0, REG_DWORD, (const BYTE*)&offsetX, sizeof(int));
+        RegSetValueExW(hKey, L"PanelFullScreenOffsetX", 0, REG_DWORD, (const BYTE*)&fsOffsetX, sizeof(int));
 
         RegSetValueExW(hKey, L"PanelMongolFont", 0, REG_SZ, (const BYTE*)g_panelMongolFont.c_str(), (g_panelMongolFont.length() + 1) * sizeof(wchar_t));
         RegSetValueExW(hKey, L"PanelChineseFont", 0, REG_SZ, (const BYTE*)g_panelChineseFont.c_str(), (g_panelChineseFont.length() + 1) * sizeof(wchar_t));
@@ -577,7 +589,8 @@ LRESULT FullScreenLyric::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
         }
 
         if (m_pMongolFormat && !renderLyrics.empty()) {
-            float visualOffsetX = width * -0.1f; float centerX = width / 2.0f + visualOffsetX; float startY = height / 2.0f - 450.0f; float step = (float)g_panelFontSize * 8.0f; float virtualIdx = 0.0f;
+            // 【修改】在全屏原有比例偏移基础上，叠加像素偏移 g_panelFullScreenOffsetX
+            float visualOffsetX = width * -0.1f; float centerX = width / 2.0f + visualOffsetX + g_panelFullScreenOffsetX; float startY = height / 2.0f - 450.0f; float step = (float)g_panelFontSize * 8.0f; float virtualIdx = 0.0f;
 
             if (m_isActuallyDragging || m_isSnapping) {
                 m_pRenderTarget->DrawLine(D2D1::Point2F(centerX, 0.0f), D2D1::Point2F(centerX, height), m_pHighlightMongolBrush, 2.0f, m_pDashedStrokeStyle);
@@ -956,7 +969,8 @@ LRESULT MongolPanelInstance::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
         }
 
         if (m_pMongolFormat && !renderLyrics.empty()) {
-            float visualOffsetX = width * -0.075f; float centerX = width / 2.0f + visualOffsetX; float virtualIdx = 0.0f;
+            // 【修改】在面板原有比例偏移基础上，叠加像素偏移 g_panelOffsetX
+            float visualOffsetX = width * -0.075f; float centerX = width / 2.0f + visualOffsetX + g_panelOffsetX; float virtualIdx = 0.0f;
 
             if (m_isActuallyDragging || m_isSnapping) {
                 m_pRenderTarget->DrawLine(D2D1::Point2F(centerX, 0.0f), D2D1::Point2F(centerX, height), m_pHighlightMongolBrush, 1.0f, m_pDashedStrokeStyle);

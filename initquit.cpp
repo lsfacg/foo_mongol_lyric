@@ -25,7 +25,7 @@ extern const GUID guid_pref_desktop;
 
 DECLARE_COMPONENT_VERSION(
     "\xE8\x92\x99\xE5\x8F\xA4\xE6\x96\x87\xE6\xAD\x8C\xE8\xAF\x8D",
-    "1.1.6",
+    "1.1.7",
     "Author: lsfacg\n"
     "A Desktop Lyric plugin for Traditional Mongolian.\n"
     "Special thanks to the Wucai Hulunbuir Children's Choir.\n"
@@ -542,11 +542,13 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_SETCURSOR:
         SetCursor(LoadCursor(NULL, IDC_ARROW));
         return TRUE;
+
     case WM_CREATE:
+    { // 【关键大括号开始】
         LoadSettings(hwnd);
         InitDWrite();
 
-        // 【修改点2】窗口创建完毕后，根据配置决定是否置顶（不用硬编码强制置顶）
+        // 1. 应用置顶属性
         if (g_isTopmost) {
             SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
@@ -554,15 +556,21 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
 
+        // 2. 应用鼠标穿透（锁定）属性
+        LONG_PTR exStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+        if (g_isLocked) exStyle |= WS_EX_TRANSPARENT;
+        else exStyle &= ~WS_EX_TRANSPARENT;
+        SetWindowLongPtr(hwnd, GWL_EXSTYLE, exStyle);
+        // 强制刷新窗口框架属性，确保穿透立刻生效
+        SetWindowPos(hwnd, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+
         // 初始化 ToolTip
-        // 【修改点3】去掉了 ToolTip 创建时的 WS_EX_TOPMOST，改用 WS_EX_NOACTIVATE
         g_hTooltip = CreateWindowExW(WS_EX_NOACTIVATE, TOOLTIPS_CLASSW, NULL,
             WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, CW_USEDEFAULT, CW_USEDEFAULT,
             CW_USEDEFAULT, CW_USEDEFAULT, hwnd, NULL, GetModuleHandle(NULL), NULL);
         if (g_hTooltip) {
-            // 【修改点4】去掉了 ToolTip 的 SetWindowPos 强制置顶，让它自然跟随你的歌词窗口即可
             g_ti.cbSize = sizeof(TOOLINFOW);
-            g_ti.uFlags = TTF_TRACK | TTF_ABSOLUTE; // 纯手动控制
+            g_ti.uFlags = TTF_TRACK | TTF_ABSOLUTE;
             g_ti.hwnd = hwnd;
             g_ti.uId = 1;
             g_ti.lpszText = (LPWSTR)L"提示";
@@ -572,6 +580,8 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         ShowWindow(hwnd, g_isVisible ? SW_SHOW : SW_HIDE);
         SetTimer(hwnd, 1, 40, NULL);
         return 0;
+    } // 【关键大括号结束】
+
     case WM_MOUSEWHEEL:
     {
         if (GET_KEYSTATE_WPARAM(wParam) & MK_CONTROL) {
@@ -590,6 +600,7 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         }
         break;
     }
+
     case WM_TIMER:
     {
         double currentTime = 0.0;
@@ -638,9 +649,11 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (needsRepaint) InvalidateRect(hwnd, NULL, TRUE);
         return 0;
     }
+
     case WM_EXITSIZEMOVE:
         SaveSettings(hwnd);
         return 0;
+
     case WM_MOUSEMOVE:
     {
         int mouseX = GET_X_LPARAM(lParam);
@@ -663,7 +676,6 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             g_hoveredButton = newHovered;
             InvalidateRect(hwnd, NULL, TRUE);
 
-            // 严格判断是否显示 ToolTip
             if (g_hTooltip) {
                 if (g_hoveredButton != -1) {
                     const wchar_t* tipText = L"";
@@ -675,7 +687,6 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                     g_ti.lpszText = (LPWSTR)tipText;
                     SendMessage(g_hTooltip, TTM_UPDATETIPTEXTW, 0, (LPARAM)&g_ti);
 
-                    // 计算位置
                     RECT rcWin; GetClientRect(hwnd, &rcWin);
                     float btnW = 40.0f;
                     float startX = (rcWin.right - btnW * 4) / 2.0f;
@@ -686,7 +697,6 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                     SendMessage(g_hTooltip, TTM_TRACKACTIVATE, TRUE, (LPARAM)&g_ti);
                 }
                 else {
-                    // 只要鼠标不在按钮上，立刻隐藏
                     SendMessage(g_hTooltip, TTM_TRACKACTIVATE, FALSE, (LPARAM)&g_ti);
                 }
             }
@@ -702,7 +712,9 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         }
         return 0;
     }
+
     case WM_MOUSELEAVE:
+    {
         if (!g_isMenuOpen) {
             g_isHovered = false;
             g_hoveredButton = -1;
@@ -710,6 +722,8 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (g_hTooltip) SendMessage(g_hTooltip, TTM_TRACKACTIVATE, FALSE, (LPARAM)&g_ti);
         InvalidateRect(hwnd, NULL, TRUE);
         return 0;
+    }
+
     case WM_LBUTTONDOWN:
     {
         if (g_isHovered && g_hoveredButton != -1) {
@@ -733,11 +747,11 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (!g_isLocked) { ReleaseCapture(); SendMessage(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0); }
         return 0;
     }
+
     case WM_CONTEXTMENU:
-    {
+    { // 【关键大括号开始】
         if (g_isLocked) return 0;
 
-        // 右键菜单弹出时，锁住背景
         g_isMenuOpen = true;
         g_isHovered = true;
         if (g_hTooltip) SendMessage(g_hTooltip, TTM_TRACKACTIVATE, FALSE, (LPARAM)&g_ti);
@@ -764,7 +778,6 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         DestroyMenu(hSubMenu);
         DestroyMenu(hMenu);
 
-        // 菜单关闭，解锁状态
         g_isMenuOpen = false;
 
         POINT cursorPt; GetCursorPos(&cursorPt);
@@ -780,8 +793,11 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         }
         else if (cmd == 2) {
             g_isLocked = !g_isLocked;
-            SetWindowLongPtr(hwnd, GWL_EXSTYLE, GetWindowLongPtr(hwnd, GWL_EXSTYLE) | (g_isLocked ? WS_EX_TRANSPARENT : 0));
-            if (!g_isLocked) SetWindowLongPtr(hwnd, GWL_EXSTYLE, GetWindowLongPtr(hwnd, GWL_EXSTYLE) & ~WS_EX_TRANSPARENT);
+            LONG_PTR exStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+            if (g_isLocked) exStyle |= WS_EX_TRANSPARENT;
+            else exStyle &= ~WS_EX_TRANSPARENT;
+            SetWindowLongPtr(hwnd, GWL_EXSTYLE, exStyle);
+            SetWindowPos(hwnd, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
             SaveSettings(hwnd);
         }
         else if (cmd == 3) {
@@ -810,7 +826,8 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         }
         InvalidateRect(hwnd, NULL, TRUE);
         return 0;
-    }
+    } // 【关键大括号结束】
+
     case WM_PAINT:
     {
         PAINTSTRUCT ps;
@@ -845,7 +862,6 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         g_pMongolOutlineBrush->SetColor(g_mongolOutlineColor);
         g_pChineseOutlineBrush->SetColor(g_chineseOutlineColor);
 
-        // 瞬间显示背景
         if (g_isHovered) {
             D2D1_RECT_F bgRect = D2D1::RectF(10.0f, 10.0f, (float)width - 10.0f, (float)height - 10.0f);
             g_pDCRenderTarget->FillRectangle(bgRect, g_pHoverBrush);
@@ -1112,7 +1128,9 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         EndPaint(hwnd, &ps);
         return 0;
     }
+
     case WM_DESTROY:
+    {
         KillTimer(hwnd, 1);
         SaveSettings(hwnd);
 
@@ -1137,6 +1155,7 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
         PostQuitMessage(0);
         return 0;
+    }
     }
     return DefWindowProc(hwnd, msg, wParam, lParam);
 }
