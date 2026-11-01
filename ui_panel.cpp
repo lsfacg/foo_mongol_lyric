@@ -38,9 +38,9 @@ D2D1_COLOR_F g_panelHighlightMongolColor = D2D1::ColorF(0.0f, 0.8f, 0.0f, 1.0f);
 D2D1_COLOR_F g_panelHighlightChineseColor = D2D1::ColorF(0.0f, 0.8f, 0.0f, 1.0f);
 D2D1_COLOR_F g_panelBgColor = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);
 int g_panelDisplayMode = 0;
-bool g_panelShowTip = true; // 【新增】面板歌词是否显示状态提示
-int g_panelOffsetX = 0;             // 【新增】窗口歌词水平位置偏移（像素）
-int g_panelFullScreenOffsetX = 0;   // 【新增】全屏歌词水平位置偏移（像素）
+bool g_panelShowTip = true;
+int g_panelOffsetX = 0;
+int g_panelFullScreenOffsetX = 0;
 
 void LoadPanelSettings() {
     HKEY hKey;
@@ -145,7 +145,7 @@ private:
     int m_lastRenderIdx;
     DWORD m_animStartTick;
     int m_lastReloadFlag;
-    bool m_isHovered = false; // 记录鼠标悬浮状态
+    bool m_isHovered = false;
 
 public:
     FullScreenLyric(MongolPanelInstance* parent);
@@ -219,7 +219,7 @@ private:
     float m_snapTargetIdx = 0.0f;
     int m_lastRenderIdx = -1;
     DWORD m_animStartTick = 0;
-    bool m_isHovered = false; // 记录鼠标悬浮状态
+    bool m_isHovered = false;
 
 public:
     void LoadLyricsForCurrentTrack();
@@ -400,7 +400,6 @@ LRESULT FullScreenLyric::OnLButtonDown(UINT, WPARAM, LPARAM lParam, BOOL&) {
 }
 
 LRESULT FullScreenLyric::OnMouseMove(UINT, WPARAM, LPARAM lParam, BOOL&) {
-    // 追踪鼠标进入，准备触发遮罩
     if (!m_isHovered) {
         m_isHovered = true;
         TRACKMOUSEEVENT tme = { sizeof(TRACKMOUSEEVENT) };
@@ -414,7 +413,7 @@ LRESULT FullScreenLyric::OnMouseMove(UINT, WPARAM, LPARAM lParam, BOOL&) {
         int mouseX = GET_X_LPARAM(lParam); int deltaX = mouseX - m_dragStartX;
         if (std::abs(deltaX) > 5) m_isActuallyDragging = true;
         if (m_isActuallyDragging) {
-            float step = (float)g_panelFontSize * 8.0f;
+            float step = (float)g_panelFontSize * 8.7f;
             m_currentDragVirtualIdx = m_dragStartVirtualIdx - (deltaX / step);
             if (m_currentDragVirtualIdx < 0.0f) m_currentDragVirtualIdx = 0.0f;
             if (m_currentDragVirtualIdx > (float)(GetLyrics().size() - 1)) m_currentDragVirtualIdx = (float)(GetLyrics().size() - 1);
@@ -436,8 +435,15 @@ LRESULT FullScreenLyric::OnLButtonUp(UINT, WPARAM, LPARAM, BOOL&) {
         if (m_isActuallyDragging) {
             m_isActuallyDragging = false;
             int targetIdx = (int)round(m_currentDragVirtualIdx);
+            int startIdx = (int)round(m_dragStartVirtualIdx);
+
             if (targetIdx >= 0 && targetIdx < (int)GetLyrics().size()) {
-                playback_control::get()->playback_seek(GetLyrics()[targetIdx].time);
+                // 【新增逻辑】只有拖动到了不同的句子，才触发播放跳转
+                if (targetIdx != startIdx) {
+                    playback_control::get()->playback_seek(GetLyrics()[targetIdx].time);
+                }
+
+                // 平滑吸附动画（无论是否跳转，松手后画面都要完美对齐）
                 if (std::abs(m_currentDragVirtualIdx - targetIdx) > 0.01f) {
                     m_isSnapping = true; m_snapStartIdx = m_currentDragVirtualIdx; m_snapTargetIdx = (float)targetIdx; m_animStartTick = GetTickCount();
                 }
@@ -486,7 +492,6 @@ LRESULT FullScreenLyric::OnContextMenu(UINT, WPARAM, LPARAM lParam, BOOL&) {
     Invalidate(); return 0;
 }
 
-// 歌词解析函数
 void MongolPanelInstance::LoadLyricsForCurrentTrack() {
     m_lyrics.clear(); metadb_handle_ptr item; if (!playback_control::get()->get_now_playing(item)) return; pfc::string8 lyrics;
     metadb_info_container::ptr info_ref = item->get_info_ref();
@@ -567,7 +572,8 @@ void MongolPanelInstance::LoadLyricsForCurrentTrack() {
 LRESULT FullScreenLyric::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
     PAINTSTRUCT ps; HDC hdc = BeginPaint(&ps);
     if (!m_pRenderTarget) {
-        RECT rc; GetClientRect(&rc); m_pD2DFactory->CreateHwndRenderTarget(D2D1::RenderTargetProperties(), D2D1::HwndRenderTargetProperties(m_hWnd, D2D1::SizeU(rc.right, rc.bottom)), &m_pRenderTarget);
+        RECT rc; GetClientRect(&rc);
+        m_pD2DFactory->CreateHwndRenderTarget(D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1::PixelFormat(), 96.0f, 96.0f), D2D1::HwndRenderTargetProperties(m_hWnd, D2D1::SizeU(rc.right, rc.bottom)), &m_pRenderTarget);
         if (m_pRenderTarget) {
             m_pRenderTarget->CreateSolidColorBrush(g_panelMongolColor, &m_pMongolBrush); m_pRenderTarget->CreateSolidColorBrush(g_panelChineseColor, &m_pChineseBrush); m_pRenderTarget->CreateSolidColorBrush(g_panelHighlightMongolColor, &m_pHighlightMongolBrush);
             m_pRenderTarget->CreateSolidColorBrush(g_panelHighlightChineseColor, &m_pHighlightChineseBrush); m_pRenderTarget->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
@@ -589,8 +595,14 @@ LRESULT FullScreenLyric::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
         }
 
         if (m_pMongolFormat && !renderLyrics.empty()) {
-            // 【修改】在全屏原有比例偏移基础上，叠加像素偏移 g_panelFullScreenOffsetX
-            float visualOffsetX = width * -0.1f; float centerX = width / 2.0f + visualOffsetX + g_panelFullScreenOffsetX; float startY = height / 2.0f - 450.0f; float step = (float)g_panelFontSize * 8.0f; float virtualIdx = 0.0f;
+            float visualOffsetX = 0.0f; // 归零固定偏移
+            float centerX = width / 2.0f + visualOffsetX + g_panelFullScreenOffsetX;
+
+            float startY = height * 0.0833f;
+            if (startY < 50.0f) startY = 50.0f;
+
+            float step = (float)g_panelFontSize * 8.7f;
+            float virtualIdx = 0.0f; // 补回声明
 
             if (m_isActuallyDragging || m_isSnapping) {
                 m_pRenderTarget->DrawLine(D2D1::Point2F(centerX, 0.0f), D2D1::Point2F(centerX, height), m_pHighlightMongolBrush, 2.0f, m_pDashedStrokeStyle);
@@ -615,11 +627,13 @@ LRESULT FullScreenLyric::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
             else if (m_isSnapping) highlightIdx = (int)round(m_snapTargetIdx);
 
             if (highlightIdx >= 0 && highlightIdx < (int)renderLyrics.size()) {
-                int startIdx = highlightIdx > 8 ? highlightIdx - 8 : 0;
-                int endIdx = highlightIdx + 15 < (int)renderLyrics.size() ? highlightIdx + 15 : (int)renderLyrics.size() - 1;
+                int maxVisibleHalf = (int)(width / step / 2.0f) + 2;
+                int startIdx = highlightIdx - maxVisibleHalf;
+                if (startIdx < 0) startIdx = 0;
+                int endIdx = highlightIdx + maxVisibleHalf;
+                if (endIdx >= (int)renderLyrics.size()) endIdx = (int)renderLyrics.size() - 1;
 
-                // 【修复】强制从屏幕顶端 90 像素处开始裁切，让字滚上去直接消失
-                D2D1_RECT_F clipRect = D2D1::RectF(0.0f, 90.0f, width, 5000.0f);
+                D2D1_RECT_F clipRect = D2D1::RectF(0.0f, startY, width, 5000.0f);
                 m_pRenderTarget->PushAxisAlignedClip(clipRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
                 for (int i = startIdx; i <= endIdx; i++) {
@@ -699,7 +713,7 @@ LRESULT FullScreenLyric::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
                         drawX = startX;
                     }
 
-                    float availableHeight = height - startY - 200.0f;
+                    float availableHeight = height - startY - 20.0f;
                     float offsetY = 0.0f;
 
                     if (i == highlightIdx) {
@@ -711,7 +725,7 @@ LRESULT FullScreenLyric::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
                             double elapsed = currentTime - renderLyrics[i].time;
                             if (m_isActuallyDragging || m_isSnapping) elapsed = 0.0;
                             if (elapsed > 0.5) {
-                                float totalOverflow = maxOverflow + 100.0f;
+                                float totalOverflow = maxOverflow;
                                 float scrollSpeed = totalOverflow / 3.5f;
                                 offsetY = (float)(elapsed - 0.5) * scrollSpeed;
                                 if (offsetY > totalOverflow) offsetY = totalOverflow;
@@ -873,7 +887,6 @@ LRESULT MongolPanelInstance::OnLButtonDown(UINT, WPARAM, LPARAM lParam, BOOL&) {
 }
 
 LRESULT MongolPanelInstance::OnMouseMove(UINT, WPARAM, LPARAM lParam, BOOL&) {
-    // 追踪鼠标进入，准备触发遮罩
     if (!m_isHovered) {
         m_isHovered = true;
         TRACKMOUSEEVENT tme = { sizeof(TRACKMOUSEEVENT) };
@@ -887,7 +900,7 @@ LRESULT MongolPanelInstance::OnMouseMove(UINT, WPARAM, LPARAM lParam, BOOL&) {
         int mouseX = GET_X_LPARAM(lParam); int deltaX = mouseX - m_dragStartX;
         if (std::abs(deltaX) > 5) m_isActuallyDragging = true;
         if (m_isActuallyDragging) {
-            float step = (float)g_panelFontSize * 4.0f;
+            float step = (float)g_panelFontSize * 3.7f;
             m_currentDragVirtualIdx = m_dragStartVirtualIdx - (deltaX / step);
             if (m_currentDragVirtualIdx < 0.0f) m_currentDragVirtualIdx = 0.0f;
             if (m_currentDragVirtualIdx > (float)(m_lyrics.size() - 1)) m_currentDragVirtualIdx = (float)(m_lyrics.size() - 1);
@@ -909,8 +922,15 @@ LRESULT MongolPanelInstance::OnLButtonUp(UINT, WPARAM, LPARAM, BOOL&) {
         if (m_isActuallyDragging) {
             m_isActuallyDragging = false;
             int targetIdx = (int)round(m_currentDragVirtualIdx);
+            int startIdx = (int)round(m_dragStartVirtualIdx);
+
             if (targetIdx >= 0 && targetIdx < (int)m_lyrics.size()) {
-                playback_control::get()->playback_seek(m_lyrics[targetIdx].time);
+                // 【新增逻辑】只有拖动到了不同的句子，才触发播放跳转
+                if (targetIdx != startIdx) {
+                    playback_control::get()->playback_seek(m_lyrics[targetIdx].time);
+                }
+
+                // 平滑吸附动画
                 if (std::abs(m_currentDragVirtualIdx - targetIdx) > 0.01f) {
                     m_isSnapping = true; m_snapStartIdx = m_currentDragVirtualIdx; m_snapTargetIdx = (float)targetIdx; m_animStartTick = GetTickCount();
                 }
@@ -935,7 +955,7 @@ LRESULT MongolPanelInstance::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
     HDC hdc = BeginPaint(&ps);
     if (!m_pRenderTarget) {
         RECT rc; GetClientRect(&rc);
-        m_pD2DFactory->CreateHwndRenderTarget(D2D1::RenderTargetProperties(), D2D1::HwndRenderTargetProperties(m_hWnd, D2D1::SizeU(rc.right, rc.bottom)), &m_pRenderTarget);
+        m_pD2DFactory->CreateHwndRenderTarget(D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1::PixelFormat(), 96.0f, 96.0f), D2D1::HwndRenderTargetProperties(m_hWnd, D2D1::SizeU(rc.right, rc.bottom)), &m_pRenderTarget);
         if (m_pRenderTarget) {
             m_pRenderTarget->CreateSolidColorBrush(g_panelMongolColor, &m_pMongolBrush);
             m_pRenderTarget->CreateSolidColorBrush(g_panelChineseColor, &m_pChineseBrush);
@@ -956,7 +976,7 @@ LRESULT MongolPanelInstance::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
         RECT rc; GetClientRect(&rc);
         float width = (float)rc.right;
         float height = (float)rc.bottom;
-        float panelStartY = 15.0f; // 稍微下移一点点
+        float panelStartY = 15.0f;
 
         std::vector<PanelLyricLine> renderLyrics; int currentIdx = -1; double currentTime = playback_control::get()->playback_get_position(); if (currentTime < 0) currentTime = 0;
         if (m_lyrics.empty()) {
@@ -969,8 +989,9 @@ LRESULT MongolPanelInstance::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
         }
 
         if (m_pMongolFormat && !renderLyrics.empty()) {
-            // 【修改】在面板原有比例偏移基础上，叠加像素偏移 g_panelOffsetX
-            float visualOffsetX = width * -0.075f; float centerX = width / 2.0f + visualOffsetX + g_panelOffsetX; float virtualIdx = 0.0f;
+            float visualOffsetX = 0.0f; // 归零固定偏移
+            float centerX = width / 2.0f + visualOffsetX + g_panelOffsetX;
+            float virtualIdx = 0.0f; // 补回声明
 
             if (m_isActuallyDragging || m_isSnapping) {
                 m_pRenderTarget->DrawLine(D2D1::Point2F(centerX, 0.0f), D2D1::Point2F(centerX, height), m_pHighlightMongolBrush, 1.0f, m_pDashedStrokeStyle);
@@ -997,7 +1018,7 @@ LRESULT MongolPanelInstance::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
             if (highlightIdx >= 0 && highlightIdx < (int)renderLyrics.size()) {
                 int startIdx = highlightIdx > 8 ? highlightIdx - 8 : 0;
                 int endIdx = highlightIdx + 15 < (int)renderLyrics.size() ? highlightIdx + 15 : (int)renderLyrics.size() - 1;
-                float step = (float)g_panelFontSize * 4.0f;
+                float step = (float)g_panelFontSize * 3.7f;
 
                 D2D1_RECT_F clipRect = D2D1::RectF(0.0f, panelStartY, width, height);
                 m_pRenderTarget->PushAxisAlignedClip(clipRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
@@ -1022,7 +1043,8 @@ LRESULT MongolPanelInstance::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
                     float lineOffset = (i - virtualIdx) * step;
                     float currentCenterX = centerX + lineOffset;
                     float startY = panelStartY;
-                    float availableHeight = height - startY - 65.0f;
+
+                    float availableHeight = height - startY - 20.0f;
 
                     IDWriteTextLayout* pLayout = nullptr;
                     if (!fullText.empty()) {
@@ -1091,7 +1113,6 @@ LRESULT MongolPanelInstance::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
                             double elapsed = currentTime - renderLyrics[i].time;
                             if (m_isActuallyDragging || m_isSnapping) elapsed = 0.0;
                             if (elapsed > 0.2) {
-                                // 把滚动余量调成 0.0f，稍微多滚一点点就停
                                 float totalOverflow = maxOverflow + 0.0f;
                                 float scrollSpeed = totalOverflow / 3.5f;
                                 offsetY = (float)(elapsed - 0.2) * scrollSpeed;

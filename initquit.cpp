@@ -27,7 +27,7 @@ extern const GUID guid_pref_desktop;
 
 DECLARE_COMPONENT_VERSION(
     "\xE8\x92\x99\xE5\x8F\xA4\xE6\x96\x87\xE6\xAD\x8C\xE8\xAF\x8D",
-    "1.1.7",
+    "1.1.8",
     "Author: lsfacg\n"
     "A Desktop Lyric plugin for Traditional Mongolian.\n"
     "Special thanks to the Wucai Hulunbuir Children's Choir.\n"
@@ -152,6 +152,7 @@ void InitDWrite() {
         g_pUIFontFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     }
 
+    // 不强制设置 96 DPI，让 D2D 跟随系统环境
     D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
         D2D1_RENDER_TARGET_TYPE_DEFAULT,
         D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
@@ -211,7 +212,6 @@ void LoadSettings(HWND hwnd) {
         g_windowWidth = (int)(250 * scale);
         g_windowHeight = (int)(800 * scale);
 
-        // 防丢边界检测
         RECT rcScreen;
         SystemParametersInfo(SPI_GETWORKAREA, 0, &rcScreen, 0);
         bool onScreen = (x + g_windowWidth > rcScreen.left && x < rcScreen.right &&
@@ -757,7 +757,6 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             ReleaseCapture();
             SendMessage(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
 
-            // 【核心修复】拖拽结束后，如果鼠标还在窗口内，强制恢复悬停状态
             POINT pt; GetCursorPos(&pt);
             RECT rcWin; GetWindowRect(hwnd, &rcWin);
             if (PtInRect(&rcWin, pt)) {
@@ -803,14 +802,12 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
         POINT pt; GetCursorPos(&pt);
 
-        // 弹出菜单前，暂时去掉 NOACTIVATE，强行获取前台，让系统能捕获外部点击
         LONG_PTR exStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
         SetWindowLongPtr(hwnd, GWL_EXSTYLE, exStyle & ~WS_EX_NOACTIVATE);
         SetForegroundWindow(hwnd);
 
         int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, hwnd, NULL);
 
-        // 菜单关闭后，恢复无焦点属性
         SetWindowLongPtr(hwnd, GWL_EXSTYLE, exStyle);
         SetWindowPos(hwnd, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
 
@@ -819,7 +816,6 @@ LRESULT CALLBACK LyricWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
         g_isMenuOpen = false;
 
-        // 只看鼠标最后停在哪里。在窗口内就保持背景，在窗口外就清空背景
         POINT cursorPt; GetCursorPos(&cursorPt);
         RECT rcWin; GetWindowRect(hwnd, &rcWin);
         bool isOutsideWindow = !PtInRect(&rcWin, cursorPt);
@@ -1244,6 +1240,7 @@ DWORD WINAPI WindowThread(LPVOID lpParam) {
 class myinitquit : public initquit {
 public:
     void on_init() {
+        // 【核心修改】彻底删除了 SetProcessDPIAware(); 让系统来接管缩放
         InitializeCriticalSection(&g_csLyrics);
         CreateThread(NULL, 0, WindowThread, NULL, 0, NULL);
 
