@@ -41,6 +41,7 @@ int g_panelDisplayMode = 0;
 bool g_panelShowTip = true;
 int g_panelOffsetX = 0;
 int g_panelFullScreenOffsetX = 0;
+bool g_panelBgFollowTheme = true;
 
 void LoadPanelSettings() {
     HKEY hKey;
@@ -53,6 +54,11 @@ void LoadPanelSettings() {
         if (RegQueryValueExW(hKey, L"PanelDisplayMode", NULL, &type, (LPBYTE)&dm, &size) == ERROR_SUCCESS && type == REG_DWORD) g_panelDisplayMode = dm;
         size = sizeof(int);
         if (RegQueryValueExW(hKey, L"PanelShowTip", NULL, &type, (LPBYTE)&tip, &size) == ERROR_SUCCESS && type == REG_DWORD) g_panelShowTip = (tip == 1);
+
+        int follow = 1;
+        size = sizeof(int);
+        if (RegQueryValueExW(hKey, L"PanelBgFollowTheme", NULL, &type, (LPBYTE)&follow, &size) == ERROR_SUCCESS && type == REG_DWORD)
+            g_panelBgFollowTheme = (follow == 1);
 
         int offsetX = 0, fsOffsetX = 0;
         size = sizeof(int);
@@ -86,9 +92,11 @@ void SavePanelSettings() {
         int tip = g_panelShowTip ? 1 : 0;
         int offsetX = g_panelOffsetX;
         int fsOffsetX = g_panelFullScreenOffsetX;
+        int follow = g_panelBgFollowTheme ? 1 : 0;
         RegSetValueExW(hKey, L"PanelFontSize", 0, REG_DWORD, (const BYTE*)&fs, sizeof(int));
         RegSetValueExW(hKey, L"PanelDisplayMode", 0, REG_DWORD, (const BYTE*)&dm, sizeof(int));
         RegSetValueExW(hKey, L"PanelShowTip", 0, REG_DWORD, (const BYTE*)&tip, sizeof(int));
+        RegSetValueExW(hKey, L"PanelBgFollowTheme", 0, REG_DWORD, (const BYTE*)&follow, sizeof(int));
         RegSetValueExW(hKey, L"PanelOffsetX", 0, REG_DWORD, (const BYTE*)&offsetX, sizeof(int));
         RegSetValueExW(hKey, L"PanelFullScreenOffsetX", 0, REG_DWORD, (const BYTE*)&fsOffsetX, sizeof(int));
 
@@ -146,6 +154,8 @@ private:
     DWORD m_animStartTick;
     int m_lastReloadFlag;
     bool m_isHovered = false;
+    bool m_isCursorVisible = true;
+    DWORD m_lastMouseMoveTick = 0;
 
 public:
     FullScreenLyric(MongolPanelInstance* parent);
@@ -226,6 +236,7 @@ public:
     void ReloadLyrics();
     void OnFullScreenClosed();
     void OpenFullScreen();
+    D2D1_COLOR_F GetEffectivePanelBgColor();
 
     MongolPanelInstance(ui_element_config::ptr cfg, ui_element_instance_callback::ptr cb);
     ~MongolPanelInstance();
@@ -281,7 +292,8 @@ FullScreenLyric::FullScreenLyric(MongolPanelInstance* parent) :
     m_pMongolBrush(nullptr), m_pChineseBrush(nullptr), m_pHighlightMongolBrush(nullptr), m_pHighlightChineseBrush(nullptr),
     m_pDashedStrokeStyle(nullptr), m_pParent(parent), m_lastFontSize(-1), m_isMouseDown(false), m_isActuallyDragging(false), m_dragStartX(0),
     m_dragStartVirtualIdx(0.0f), m_currentDragVirtualIdx(0.0f), m_isSnapping(false), m_snapStartIdx(0.0f),
-    m_snapTargetIdx(0.0f), m_lastRenderIdx(-1), m_animStartTick(0), m_lastReloadFlag(0) {
+    m_snapTargetIdx(0.0f), m_lastRenderIdx(-1), m_animStartTick(0), m_lastReloadFlag(0),
+    m_isCursorVisible(true), m_lastMouseMoveTick(0) {
 }
 
 FullScreenLyric::~FullScreenLyric() {
@@ -334,6 +346,8 @@ void FullScreenLyric::InitFullScreen() {
     }
     m_lastRenderIdx = currentIdx;
     m_animStartTick = GetTickCount() - 1000;
+    m_isCursorVisible = true;
+    m_lastMouseMoveTick = GetTickCount();
 }
 
 std::vector<PanelLyricLine>& FullScreenLyric::GetLyrics() { return m_pParent->GetLyrics(); }
@@ -355,10 +369,23 @@ LRESULT FullScreenLyric::OnTimer(UINT, WPARAM, LPARAM, BOOL&) {
         }
     }
     if (m_lastReloadFlag != g_reload_flag) { m_lastReloadFlag = g_reload_flag; m_lastRenderIdx = -1; }
+
+    if (m_isCursorVisible && (GetTickCount() - m_lastMouseMoveTick > 3000)) {
+        ShowCursor(FALSE);
+        m_isCursorVisible = false;
+    }
+
     Invalidate(); return 0;
 }
 
 LRESULT FullScreenLyric::OnMouseWheel(UINT, WPARAM wParam, LPARAM, BOOL&) {
+    // 恢复鼠标
+    m_lastMouseMoveTick = GetTickCount();
+    if (!m_isCursorVisible) {
+        ShowCursor(TRUE);
+        m_isCursorVisible = true;
+    }
+
     if (GET_KEYSTATE_WPARAM(wParam) & MK_CONTROL) {
         static DWORD lastWheelTime = 0;
         DWORD currentTime = GetTickCount();
@@ -374,13 +401,20 @@ LRESULT FullScreenLyric::OnMouseWheel(UINT, WPARAM wParam, LPARAM, BOOL&) {
 }
 
 LRESULT FullScreenLyric::OnKeyDown(UINT, WPARAM wParam, LPARAM, BOOL&) {
-    if (wParam == VK_ESCAPE) { PostMessage(WM_CLOSE); return 0; }
+    if (wParam == VK_ESCAPE) {
+        if (!m_isCursorVisible) { ShowCursor(TRUE); m_isCursorVisible = true; }
+        PostMessage(WM_CLOSE); return 0;
+    }
     return 0;
 }
 
 LRESULT FullScreenLyric::OnDestroy(UINT, WPARAM, LPARAM, BOOL&) { KillTimer(1); return 0; }
 
 LRESULT FullScreenLyric::OnNcDestroy(UINT, WPARAM, LPARAM, BOOL&) {
+    if (!m_isCursorVisible) {
+        ShowCursor(TRUE); // 退出时强制恢复鼠标
+        m_isCursorVisible = true;
+    }
     if (m_pParent) { m_pParent->OnFullScreenClosed(); }
     delete this; return 0;
 }
@@ -388,6 +422,13 @@ LRESULT FullScreenLyric::OnNcDestroy(UINT, WPARAM, LPARAM, BOOL&) {
 LRESULT FullScreenLyric::OnLButtonDblClk(UINT, WPARAM, LPARAM, BOOL&) { PostMessage(WM_CLOSE); return 0; }
 
 LRESULT FullScreenLyric::OnLButtonDown(UINT, WPARAM, LPARAM lParam, BOOL&) {
+    // 恢复鼠标
+    m_lastMouseMoveTick = GetTickCount();
+    if (!m_isCursorVisible) {
+        ShowCursor(TRUE);
+        m_isCursorVisible = true;
+    }
+
     if (GetLyrics().empty()) return 0;
     m_isMouseDown = true; m_isActuallyDragging = false; m_isSnapping = false; m_dragStartX = GET_X_LPARAM(lParam);
     double currentTime = GetPlaybackTime();
@@ -400,6 +441,13 @@ LRESULT FullScreenLyric::OnLButtonDown(UINT, WPARAM, LPARAM lParam, BOOL&) {
 }
 
 LRESULT FullScreenLyric::OnMouseMove(UINT, WPARAM, LPARAM lParam, BOOL&) {
+    // 恢复鼠标
+    m_lastMouseMoveTick = GetTickCount();
+    if (!m_isCursorVisible) {
+        ShowCursor(TRUE);
+        m_isCursorVisible = true;
+    }
+
     if (!m_isHovered) {
         m_isHovered = true;
         TRACKMOUSEEVENT tme = { sizeof(TRACKMOUSEEVENT) };
@@ -432,18 +480,20 @@ LRESULT FullScreenLyric::OnMouseLeave(UINT, WPARAM, LPARAM, BOOL&) {
 LRESULT FullScreenLyric::OnLButtonUp(UINT, WPARAM, LPARAM, BOOL&) {
     if (m_isMouseDown) {
         m_isMouseDown = false; ReleaseCapture();
+
+        // 恢复鼠标
+        if (!m_isCursorVisible) { ShowCursor(TRUE); m_isCursorVisible = true; }
+        m_lastMouseMoveTick = GetTickCount();
+
         if (m_isActuallyDragging) {
             m_isActuallyDragging = false;
             int targetIdx = (int)round(m_currentDragVirtualIdx);
             int startIdx = (int)round(m_dragStartVirtualIdx);
 
             if (targetIdx >= 0 && targetIdx < (int)GetLyrics().size()) {
-                // 【新增逻辑】只有拖动到了不同的句子，才触发播放跳转
                 if (targetIdx != startIdx) {
                     playback_control::get()->playback_seek(GetLyrics()[targetIdx].time);
                 }
-
-                // 平滑吸附动画（无论是否跳转，松手后画面都要完美对齐）
                 if (std::abs(m_currentDragVirtualIdx - targetIdx) > 0.01f) {
                     m_isSnapping = true; m_snapStartIdx = m_currentDragVirtualIdx; m_snapTargetIdx = (float)targetIdx; m_animStartTick = GetTickCount();
                 }
@@ -456,6 +506,13 @@ LRESULT FullScreenLyric::OnLButtonUp(UINT, WPARAM, LPARAM, BOOL&) {
 }
 
 LRESULT FullScreenLyric::OnContextMenu(UINT, WPARAM, LPARAM lParam, BOOL&) {
+    // 恢复鼠标
+    m_lastMouseMoveTick = GetTickCount();
+    if (!m_isCursorVisible) {
+        ShowCursor(TRUE);
+        m_isCursorVisible = true;
+    }
+
     HMENU hMenu = CreatePopupMenu(); HMENU hSubMenu = CreatePopupMenu();
     AppendMenuW(hMenu, MF_STRING | (g_isVisible ? MF_CHECKED : MF_UNCHECKED), 1, L"\u542F\u7528\u684C\u9762\u6B4C\u8BCD");
     AppendMenuW(hMenu, MF_STRING | (g_isLocked ? MF_CHECKED : MF_UNCHECKED), 2, L"\u9501\u5B9A\u684C\u9762\u6B4C\u8BCD");
@@ -581,7 +638,8 @@ LRESULT FullScreenLyric::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
     }
     if (m_pRenderTarget) {
         m_pMongolBrush->SetColor(g_panelMongolColor); m_pChineseBrush->SetColor(g_panelChineseColor); m_pHighlightMongolBrush->SetColor(g_panelHighlightMongolColor); m_pHighlightChineseBrush->SetColor(g_panelHighlightChineseColor);
-        m_pRenderTarget->BeginDraw(); m_pRenderTarget->Clear(g_panelBgColor);
+        m_pRenderTarget->BeginDraw();
+        m_pRenderTarget->Clear(m_pParent ? m_pParent->GetEffectivePanelBgColor() : g_panelBgColor);
         RECT rc; GetClientRect(&rc); float width = (float)rc.right; float height = (float)rc.bottom;
 
         std::vector<PanelLyricLine> renderLyrics; int currentIdx = -1; double currentTime = GetPlaybackTime();
@@ -595,14 +653,14 @@ LRESULT FullScreenLyric::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
         }
 
         if (m_pMongolFormat && !renderLyrics.empty()) {
-            float visualOffsetX = 0.0f; // 归零固定偏移
+            float visualOffsetX = 0.0f;
             float centerX = width / 2.0f + visualOffsetX + g_panelFullScreenOffsetX;
 
             float startY = height * 0.0833f;
             if (startY < 50.0f) startY = 50.0f;
 
             float step = (float)g_panelFontSize * 8.7f;
-            float virtualIdx = 0.0f; // 补回声明
+            float virtualIdx = 0.0f;
 
             if (m_isActuallyDragging || m_isSnapping) {
                 m_pRenderTarget->DrawLine(D2D1::Point2F(centerX, 0.0f), D2D1::Point2F(centerX, height), m_pHighlightMongolBrush, 2.0f, m_pDashedStrokeStyle);
@@ -765,6 +823,21 @@ void MongolPanelInstance::ReloadLyrics() { LoadLyricsForCurrentTrack(); m_lastRe
 void MongolPanelInstance::OnFullScreenClosed() { m_pFullScreen = nullptr; }
 void MongolPanelInstance::OpenFullScreen() { if (m_pFullScreen) return; m_pFullScreen = new FullScreenLyric(this); m_pFullScreen->InitFullScreen(); }
 
+D2D1_COLOR_F MongolPanelInstance::GetEffectivePanelBgColor() {
+    if (g_panelBgFollowTheme && m_callback.is_valid()) {
+        t_ui_color color;
+        if (m_callback->query_color(ui_color_background, color)) {
+            return D2D1::ColorF(
+                GetRValue(color) / 255.0f,
+                GetGValue(color) / 255.0f,
+                GetBValue(color) / 255.0f,
+                1.0f
+            );
+        }
+    }
+    return g_panelBgColor;
+}
+
 MongolPanelInstance::MongolPanelInstance(ui_element_config::ptr cfg, ui_element_instance_callback::ptr cb) : m_callback(cb) {
     LoadPanelSettings(); m_lastReloadFlag = g_reload_flag;
     D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &m_pD2DFactory);
@@ -811,7 +884,13 @@ LRESULT MongolPanelInstance::OnMouseWheel(UINT, WPARAM wParam, LPARAM, BOOL&) {
     return 0;
 }
 
-LRESULT MongolPanelInstance::OnContextMenu(UINT, WPARAM, LPARAM lParam, BOOL&) {
+LRESULT MongolPanelInstance::OnContextMenu(UINT, WPARAM, LPARAM lParam, BOOL& bHandled) {
+    // 如果是布局编辑模式，将消息交还给 fb2k 宿主处理
+    if (m_callback.is_valid() && m_callback->is_edit_mode_enabled()) {
+        bHandled = FALSE;
+        return 0;
+    }
+
     HMENU hMenu = CreatePopupMenu(); HMENU hSubMenu = CreatePopupMenu();
     AppendMenuW(hMenu, MF_STRING | (g_isVisible ? MF_CHECKED : MF_UNCHECKED), 1, L"\u542F\u7528\u684C\u9762\u6B4C\u8BCD");
     AppendMenuW(hMenu, MF_STRING | (g_isLocked ? MF_CHECKED : MF_UNCHECKED), 2, L"\u9501\u5B9A\u684C\u9762\u6B4C\u8BCD");
@@ -925,12 +1004,9 @@ LRESULT MongolPanelInstance::OnLButtonUp(UINT, WPARAM, LPARAM, BOOL&) {
             int startIdx = (int)round(m_dragStartVirtualIdx);
 
             if (targetIdx >= 0 && targetIdx < (int)m_lyrics.size()) {
-                // 【新增逻辑】只有拖动到了不同的句子，才触发播放跳转
                 if (targetIdx != startIdx) {
                     playback_control::get()->playback_seek(m_lyrics[targetIdx].time);
                 }
-
-                // 平滑吸附动画
                 if (std::abs(m_currentDragVirtualIdx - targetIdx) > 0.01f) {
                     m_isSnapping = true; m_snapStartIdx = m_currentDragVirtualIdx; m_snapTargetIdx = (float)targetIdx; m_animStartTick = GetTickCount();
                 }
@@ -971,7 +1047,7 @@ LRESULT MongolPanelInstance::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
         m_pHighlightChineseBrush->SetColor(g_panelHighlightChineseColor);
 
         m_pRenderTarget->BeginDraw();
-        m_pRenderTarget->Clear(g_panelBgColor);
+        m_pRenderTarget->Clear(GetEffectivePanelBgColor());
 
         RECT rc; GetClientRect(&rc);
         float width = (float)rc.right;
@@ -989,9 +1065,9 @@ LRESULT MongolPanelInstance::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
         }
 
         if (m_pMongolFormat && !renderLyrics.empty()) {
-            float visualOffsetX = 0.0f; // 归零固定偏移
+            float visualOffsetX = 0.0f;
             float centerX = width / 2.0f + visualOffsetX + g_panelOffsetX;
-            float virtualIdx = 0.0f; // 补回声明
+            float virtualIdx = 0.0f;
 
             if (m_isActuallyDragging || m_isSnapping) {
                 m_pRenderTarget->DrawLine(D2D1::Point2F(centerX, 0.0f), D2D1::Point2F(centerX, height), m_pHighlightMongolBrush, 1.0f, m_pDashedStrokeStyle);

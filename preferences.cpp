@@ -8,6 +8,7 @@
 #include <d2d1helper.h>    
 #include <SDK/preferences_page.h>
 #include <SDK/core_api.h>
+#include <SDK/coreDarkMode.h> // 引入官方深色模式头文件
 
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "comdlg32.lib")
@@ -25,6 +26,7 @@ extern D2D1_COLOR_F g_panelHighlightMongolColor; extern D2D1_COLOR_F g_panelHigh
 extern bool g_panelShowTip;
 extern int g_panelOffsetX;             // 窗口歌词水平偏移
 extern int g_panelFullScreenOffsetX;   // 全屏歌词水平偏移
+extern bool g_panelBgFollowTheme;
 
 void ApplySettingsAndRefresh(); extern void SavePanelSettings();
 extern void SaveSettings(HWND hwnd);
@@ -34,6 +36,7 @@ extern const GUID guid_preferences_page = { 0x9C3D2A1B, 0x8B4E, 0x4C2D,{ 0xA1, 0
 extern const GUID guid_pref_desktop = { 0x9C3D2A1B, 0x8B4E, 0x4C2D,{ 0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x1A, 0x2C } };
 extern const GUID guid_pref_panel = { 0x9C3D2A1B, 0x8B4E, 0x4C2D,{ 0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x1A, 0x2E } };
 
+// ================= 字体辅助 =================
 int CALLBACK EnumFontProc(const LOGFONTW* lpelfe, const TEXTMETRICW* lpntme, DWORD FontType, LPARAM lParam) {
     if (lpelfe->lfFaceName[0] == L'@') return 1;
     HWND hCombo = (HWND)lParam;
@@ -68,40 +71,29 @@ void PopulateFontsCombo(HWND hCombo, const std::wstring& defaultFont) {
 // =========================================================================
 // 1. 通用父页面
 // =========================================================================
-// =========================================================================
-// 1. 通用父页面
-// =========================================================================
 class MongolPrefsRootInstance : public preferences_page_instance {
 private:
     HWND m_hwnd, m_hTitle, m_hLink, m_hAuthor;
     preferences_page_callback::ptr m_callback;
     WNDPROC m_oldWndProc = nullptr;
     HFONT m_hFontLarge, m_hFontSmall;
+    fb2k::CCoreDarkModeHooks m_darkHooks; // 官方深色钩子
 
     static LRESULT CALLBACK PrefsWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         MongolPrefsRootInstance* pThis = (MongolPrefsRootInstance*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
         if (pThis) {
             if (msg == WM_SIZE) {
                 RECT rc; GetClientRect(hwnd, &rc);
-
                 if (pThis->m_hTitle) {
                     int titleW = rc.right;
-                    int titleH = 50; // 单行文本，高度设为 50 即可
-
-                    // 垂直居中偏上：取一半高度，再减去 80 像素（数字越小越靠下）
+                    int titleH = 50;
                     int posY = rc.bottom / 2 - 80;
-                    if (posY < 20) posY = 20; // 防止窗口太小导致文字飞出
-
+                    if (posY < 20) posY = 20;
                     SetWindowPos(pThis->m_hTitle, NULL, 0, posY, titleW, titleH, SWP_NOZORDER);
                 }
-
                 if (pThis->m_hLink && pThis->m_hAuthor) {
                     int bottomY = rc.bottom - 30;
-
-                    // 把链接的宽度从 100 增加到 110，让它一行放下
                     SetWindowPos(pThis->m_hLink, NULL, 20, bottomY, 110, 30, SWP_NOZORDER);
-
-                    // 把作者的 X 坐标从 130 往右挪到 140，给链接留出足够的空间
                     SetWindowPos(pThis->m_hAuthor, NULL, 140, bottomY, 300, 30, SWP_NOZORDER);
                 }
             }
@@ -112,12 +104,6 @@ private:
                     ShellExecuteW(NULL, L"open", pNMLink->item.szUrl, NULL, NULL, SW_SHOWNORMAL);
                     return 0;
                 }
-            }
-            else if (msg == WM_CTLCOLORSTATIC) {
-                HDC hdc = (HDC)wp;
-                SetTextColor(hdc, GetSysColor(COLOR_BTNTEXT));
-                SetBkMode(hdc, TRANSPARENT);
-                return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
             }
         }
         if (pThis && pThis->m_oldWndProc) return CallWindowProc(pThis->m_oldWndProc, hwnd, msg, wp, lp);
@@ -143,7 +129,6 @@ public:
 
         m_hFontSmall = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
 
-        // 【修改文本】改为单行短句
         m_hTitle = CreateWindowW(L"STATIC", L"请在左侧选择一个子页面进行设置。", WS_CHILD | WS_VISIBLE | SS_CENTER, 0, 0, 0, 0, m_hwnd, nullptr, hInst, nullptr);
         SendMessage(m_hTitle, WM_SETFONT, (WPARAM)m_hFontLarge, TRUE);
 
@@ -155,6 +140,9 @@ public:
 
         RECT rc; GetClientRect(m_hwnd, &rc);
         SendMessage(m_hwnd, WM_SIZE, 0, MAKELPARAM(rc.right, rc.bottom));
+
+        // 【调用官方接口，自动接管所有深色模式渲染】
+        m_darkHooks.AddDialogWithControls(m_hwnd);
     }
 
     ~MongolPrefsRootInstance() {
@@ -162,7 +150,8 @@ public:
         if (m_hFontLarge) DeleteObject(m_hFontLarge);
     }
     virtual HWND get_wnd() override { return m_hwnd; }
-    virtual t_uint32 get_state() override { return preferences_state::resettable; }
+    // 【加上 dark_mode_supported 标志】
+    virtual t_uint32 get_state() override { return preferences_state::resettable | preferences_state::dark_mode_supported; }
     virtual void apply() override {}
     virtual void reset() override {}
 };
@@ -188,6 +177,7 @@ private:
     HWND m_hComboFontM, m_hBtnColorM, m_hBtnOutlineColorM, m_hSliderOutlineM, m_hLabelOutlineM;
     HWND m_hComboFontC, m_hBtnColorC, m_hBtnOutlineColorC, m_hSliderOutlineC, m_hLabelOutlineC;
     bool m_dirty = false; WNDPROC m_oldWndProc = nullptr; HFONT m_hFontBold;
+    fb2k::CCoreDarkModeHooks m_darkHooks; // 官方深色钩子
 
     D2D1_COLOR_F m_tempMongolColor, m_tempChineseColor, m_tempMongolOutlineColor, m_tempChineseOutlineColor;
 
@@ -239,7 +229,10 @@ public:
         m_tempChineseOutlineColor = g_chineseOutlineColor;
 
         HINSTANCE hInst = core_api::get_my_instance(); m_hwnd = CreateWindowExW(0, WC_DIALOG, L"", WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_VSCROLL, 0, 0, 500, 500, p_parent, nullptr, hInst, nullptr);
-        if (m_hwnd) { SetWindowLongPtr(m_hwnd, GWLP_USERDATA, (LONG_PTR)this); m_oldWndProc = (WNDPROC)SetWindowLongPtr(m_hwnd, GWLP_WNDPROC, (LONG_PTR)PrefsWndProc); }
+        if (m_hwnd) {
+            SetWindowLongPtr(m_hwnd, GWLP_USERDATA, (LONG_PTR)this);
+            m_oldWndProc = (WNDPROC)SetWindowLongPtr(m_hwnd, GWLP_WNDPROC, (LONG_PTR)PrefsWndProc);
+        }
         m_hFontBold = CreateFontW(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Microsoft YaHei");
         int labelW = 130, ctrlX = 160, gap = 45, y = 20; HFONT hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
         HWND hTitleBase = CreateWindowW(L"STATIC", L"歌词窗口控制", WS_CHILD | WS_VISIBLE, 20, y, 120, 25, m_hwnd, nullptr, hInst, nullptr); SendMessage(hTitleBase, WM_SETFONT, (WPARAM)m_hFontBold, TRUE); CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_ETCHEDHORZ, 140, y + 12, 320, 2, m_hwnd, nullptr, hInst, nullptr);
@@ -268,11 +261,15 @@ public:
         HWND child = GetWindow(m_hwnd, GW_CHILD);
         while (child) { SendMessage(child, WM_SETFONT, (WPARAM)hFont, TRUE); child = GetWindow(child, GW_HWNDNEXT); }
         SendMessage(hTitleBase, WM_SETFONT, (WPARAM)m_hFontBold, TRUE); SendMessage(hTitleM, WM_SETFONT, (WPARAM)m_hFontBold, TRUE); SendMessage(hTitleC, WM_SETFONT, (WPARAM)m_hFontBold, TRUE);
+
+        // 【调用官方接口】
+        m_darkHooks.AddDialogWithControls(m_hwnd);
     }
 
     ~MongolPrefsDesktopInstance() { if (m_hwnd) { SetWindowLongPtr(m_hwnd, GWLP_WNDPROC, (LONG_PTR)m_oldWndProc); DestroyWindow(m_hwnd); } if (m_hFontBold) DeleteObject(m_hFontBold); }
     virtual HWND get_wnd() override { return m_hwnd; }
-    virtual t_uint32 get_state() override { return preferences_state::resettable | (m_dirty ? preferences_state::changed : 0); }
+    // 【加上 dark_mode_supported 标志】
+    virtual t_uint32 get_state() override { return preferences_state::resettable | (m_dirty ? preferences_state::changed : 0) | preferences_state::dark_mode_supported; }
 
     virtual void apply() override {
         g_fontSize = (int)SendMessage(m_hSliderFontSize, TBM_GETPOS, 0, 0); g_displayMode = (int)SendMessage(m_hComboDisplayMode, CB_GETCURSEL, 0, 0); g_isVisible = (SendMessage(m_hChkVisible, BM_GETCHECK, 0, 0) == BST_CHECKED);
@@ -341,8 +338,10 @@ class MongolPrefsPanelInstance : public preferences_page_instance {
 private:
     HWND m_hwnd, m_hSliderFontSize, m_hLabelFontSize, m_hComboDisplayMode, m_hBtnColorBg, m_hComboFontM, m_hBtnColorM, m_hBtnColorHM, m_hComboFontC, m_hBtnColorC, m_hBtnColorHC;
     HWND m_hChkShowTip;
+    HWND m_hChkFollowBgTheme;
     HWND m_hSliderOffsetX, m_hLabelOffsetX, m_hSliderFullScreenOffsetX, m_hLabelFullScreenOffsetX;
     preferences_page_callback::ptr m_callback; bool m_dirty = false; WNDPROC m_oldWndProc = nullptr; HFONT m_hFontBold;
+    fb2k::CCoreDarkModeHooks m_darkHooks; // 官方深色钩子
 
     D2D1_COLOR_F m_tempPanelMongolColor, m_tempPanelChineseColor, m_tempPanelHighlightMongolColor, m_tempPanelHighlightChineseColor, m_tempPanelBgColor;
 
@@ -375,12 +374,20 @@ private:
             else if (msg == WM_COMMAND) {
                 int id = LOWORD(wp); int code = HIWORD(wp);
                 if ((id == 3010 || id == 3006 || id == 3007) && code == CBN_SELCHANGE) { pThis->m_dirty = true; if (pThis->m_callback.is_valid()) pThis->m_callback->on_state_changed(); }
-                else if (id == 3011 && code == BN_CLICKED) { pThis->m_dirty = true; if (pThis->m_callback.is_valid()) pThis->m_callback->on_state_changed(); }
+                else if ((id == 3011 || id == 3014) && code == BN_CLICKED) { pThis->m_dirty = true; if (pThis->m_callback.is_valid()) pThis->m_callback->on_state_changed(); }
                 else if ((id == 3001 || id == 3002 || id == 3004 || id == 3008 || id == 3009) && code == BN_CLICKED) {
                     CHOOSECOLORW cc = { 0 }; static COLORREF customColors[16] = { 0 }; cc.lStructSize = sizeof(cc); cc.hwndOwner = hwnd; cc.lpCustColors = customColors; cc.Flags = CC_FULLOPEN | CC_RGBINIT;
                     D2D1_COLOR_F* targetColor = (id == 3001) ? &pThis->m_tempPanelMongolColor : (id == 3002) ? &pThis->m_tempPanelChineseColor : (id == 3004) ? &pThis->m_tempPanelBgColor : (id == 3008) ? &pThis->m_tempPanelHighlightMongolColor : &pThis->m_tempPanelHighlightChineseColor;
                     cc.rgbResult = RGB((BYTE)(targetColor->r * 255), (BYTE)(targetColor->g * 255), (BYTE)(targetColor->b * 255));
-                    if (ChooseColorW(&cc)) { *targetColor = D2D1::ColorF(GetRValue(cc.rgbResult) / 255.0f, GetGValue(cc.rgbResult) / 255.0f, GetBValue(cc.rgbResult) / 255.0f); InvalidateRect((HWND)lp, NULL, TRUE); pThis->m_dirty = true; if (pThis->m_callback.is_valid()) pThis->m_callback->on_state_changed(); }
+                    if (ChooseColorW(&cc)) {
+                        *targetColor = D2D1::ColorF(GetRValue(cc.rgbResult) / 255.0f, GetGValue(cc.rgbResult) / 255.0f, GetBValue(cc.rgbResult) / 255.0f);
+                        InvalidateRect((HWND)lp, NULL, TRUE);
+                        if (id == 3004) {
+                            SendMessage(pThis->m_hChkFollowBgTheme, BM_SETCHECK, BST_UNCHECKED, 0);
+                            g_panelBgFollowTheme = false;
+                        }
+                        pThis->m_dirty = true; if (pThis->m_callback.is_valid()) pThis->m_callback->on_state_changed();
+                    }
                 }
             }
         }
@@ -388,7 +395,7 @@ private:
         return DefWindowProc(hwnd, msg, wp, lp);
     }
 public:
-    MongolPrefsPanelInstance(HWND p_parent, preferences_page_callback::ptr p_callback) : m_hwnd(nullptr), m_callback(p_callback), m_hFontBold(nullptr) {
+    MongolPrefsPanelInstance(HWND p_parent, preferences_page_callback::ptr p_callback) : m_hwnd(nullptr), m_callback(p_callback), m_hFontBold(nullptr), m_hChkFollowBgTheme(nullptr) {
         m_tempPanelMongolColor = g_panelMongolColor;
         m_tempPanelChineseColor = g_panelChineseColor;
         m_tempPanelHighlightMongolColor = g_panelHighlightMongolColor;
@@ -396,28 +403,45 @@ public:
         m_tempPanelBgColor = g_panelBgColor;
 
         HINSTANCE hInst = core_api::get_my_instance(); m_hwnd = CreateWindowExW(0, WC_DIALOG, L"", WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_VSCROLL, 0, 0, 480, 350, p_parent, nullptr, hInst, nullptr);
-        if (m_hwnd) { SetWindowLongPtr(m_hwnd, GWLP_USERDATA, (LONG_PTR)this); m_oldWndProc = (WNDPROC)SetWindowLongPtr(m_hwnd, GWLP_WNDPROC, (LONG_PTR)PrefsWndProc); }
+        if (m_hwnd) {
+            SetWindowLongPtr(m_hwnd, GWLP_USERDATA, (LONG_PTR)this);
+            m_oldWndProc = (WNDPROC)SetWindowLongPtr(m_hwnd, GWLP_WNDPROC, (LONG_PTR)PrefsWndProc);
+        }
         m_hFontBold = CreateFontW(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Microsoft YaHei");
         int labelW = 140, ctrlX = 160, gap = 45, y = 20; HFONT hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+
         HWND hTitleBase = CreateWindowW(L"STATIC", L"基本设置", WS_CHILD | WS_VISIBLE, 20, y, 100, 25, m_hwnd, nullptr, hInst, nullptr); SendMessage(hTitleBase, WM_SETFONT, (WPARAM)m_hFontBold, TRUE); CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_ETCHEDHORZ, 120, y + 12, 320, 2, m_hwnd, nullptr, hInst, nullptr);
+
         y += 45; CreateWindowW(L"STATIC", L"\u9762\u677F\u6B4C\u8BCD\u5B57\u4F53\u5927\u5C0F:", WS_CHILD | WS_VISIBLE, 20, y, labelW, 20, m_hwnd, nullptr, hInst, nullptr); m_hSliderFontSize = CreateWindowExW(0, TRACKBAR_CLASSW, L"", WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_NOTICKS, ctrlX, y - 5, 150, 30, m_hwnd, (HMENU)3005, hInst, nullptr); m_hLabelFontSize = CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE, ctrlX + 160, y, 50, 20, m_hwnd, nullptr, hInst, nullptr); SendMessage(m_hSliderFontSize, TBM_SETRANGE, TRUE, MAKELONG(10, 40)); SendMessage(m_hSliderFontSize, TBM_SETPOS, TRUE, g_panelFontSize); wchar_t buf[32]; swprintf_s(buf, L"%d", g_panelFontSize); SetWindowTextW(m_hLabelFontSize, buf);
+
         y += gap; CreateWindowW(L"STATIC", L"\u53CC\u8BED\u6B4C\u8BCD\u663E\u793A:", WS_CHILD | WS_VISIBLE, 20, y, labelW, 20, m_hwnd, nullptr, hInst, nullptr); m_hComboDisplayMode = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, ctrlX, y - 3, 200, 200, m_hwnd, (HMENU)3010, hInst, nullptr); SendMessage(m_hComboDisplayMode, CB_ADDSTRING, 0, (LPARAM)L"显示双语歌词（如果有）"); SendMessage(m_hComboDisplayMode, CB_ADDSTRING, 0, (LPARAM)L"仅显示蒙古文"); SendMessage(m_hComboDisplayMode, CB_ADDSTRING, 0, (LPARAM)L"仅显示中文翻译"); SendMessage(m_hComboDisplayMode, CB_SETCURSEL, g_panelDisplayMode, 0);
 
         y += gap; CreateWindowW(L"STATIC", L"\u7A97\u53E3\u6B4C\u8BCD\u6C34\u5E73\u504F\u79FB:", WS_CHILD | WS_VISIBLE, 20, y, labelW, 20, m_hwnd, nullptr, hInst, nullptr); m_hSliderOffsetX = CreateWindowExW(0, TRACKBAR_CLASSW, L"", WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_NOTICKS, ctrlX, y - 5, 150, 30, m_hwnd, (HMENU)3012, hInst, nullptr); m_hLabelOffsetX = CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE, ctrlX + 160, y, 50, 20, m_hwnd, nullptr, hInst, nullptr); SendMessage(m_hSliderOffsetX, TBM_SETRANGEMIN, TRUE, 0); SendMessage(m_hSliderOffsetX, TBM_SETRANGEMAX, TRUE, 600); SendMessage(m_hSliderOffsetX, TBM_SETPOS, TRUE, g_panelOffsetX + 300); wchar_t bufOffX[32]; swprintf_s(bufOffX, L"%d", g_panelOffsetX); SetWindowTextW(m_hLabelOffsetX, bufOffX);
 
         y += gap; CreateWindowW(L"STATIC", L"\u5168\u5C4F\u6B4C\u8BCD\u6C34\u5E73\u504F\u79FB:", WS_CHILD | WS_VISIBLE, 20, y, labelW, 20, m_hwnd, nullptr, hInst, nullptr); m_hSliderFullScreenOffsetX = CreateWindowExW(0, TRACKBAR_CLASSW, L"", WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_NOTICKS, ctrlX, y - 5, 150, 30, m_hwnd, (HMENU)3013, hInst, nullptr); m_hLabelFullScreenOffsetX = CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE, ctrlX + 160, y, 50, 20, m_hwnd, nullptr, hInst, nullptr); SendMessage(m_hSliderFullScreenOffsetX, TBM_SETRANGEMIN, TRUE, 0); SendMessage(m_hSliderFullScreenOffsetX, TBM_SETRANGEMAX, TRUE, 2000); SendMessage(m_hSliderFullScreenOffsetX, TBM_SETPOS, TRUE, g_panelFullScreenOffsetX + 1000); wchar_t bufOffFS[32]; swprintf_s(bufOffFS, L"%d", g_panelFullScreenOffsetX); SetWindowTextW(m_hLabelFullScreenOffsetX, bufOffFS);
 
+        // 背景颜色和跟随系统复选框
         y += gap; CreateWindowW(L"STATIC", L"\u80CC\u666F\u989C\u8272:", WS_CHILD | WS_VISIBLE, 20, y, labelW, 20, m_hwnd, nullptr, hInst, nullptr); m_hBtnColorBg = CreateWindowW(L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, ctrlX, y - 3, 80, 25, m_hwnd, (HMENU)3004, hInst, nullptr);
-        y += 30; m_hChkShowTip = CreateWindowW(L"BUTTON", L"\u663E\u793A\u72B6\u6001\u63D0\u793A", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, ctrlX, y, 200, 20, m_hwnd, (HMENU)3011, hInst, nullptr); SendMessage(m_hChkShowTip, BM_SETCHECK, g_panelShowTip ? BST_CHECKED : BST_UNCHECKED, 0);
+        m_hChkFollowBgTheme = CreateWindowW(L"BUTTON", L"背景颜色跟随系统", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, ctrlX + 110, y, 200, 20, m_hwnd, (HMENU)3014, hInst, nullptr); SendMessage(m_hChkFollowBgTheme, BM_SETCHECK, g_panelBgFollowTheme ? BST_CHECKED : BST_UNCHECKED, 0);
 
-        y += 60; HWND hTitleM = CreateWindowW(L"STATIC", L"蒙古文设置", WS_CHILD | WS_VISIBLE, 20, y, 100, 25, m_hwnd, nullptr, hInst, nullptr); SendMessage(hTitleM, WM_SETFONT, (WPARAM)m_hFontBold, TRUE); CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_ETCHEDHORZ, 120, y + 12, 320, 2, m_hwnd, nullptr, hInst, nullptr);
+        // 稍微往下一点
+        y += 40; m_hChkShowTip = CreateWindowW(L"BUTTON", L"\u663E\u793A\u72B6\u6001\u63D0\u793A", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, ctrlX, y, 200, 20, m_hwnd, (HMENU)3011, hInst, nullptr); SendMessage(m_hChkShowTip, BM_SETCHECK, g_panelShowTip ? BST_CHECKED : BST_UNCHECKED, 0);
+
+        // 保持下方区块均衡
+        y += 50; HWND hTitleM = CreateWindowW(L"STATIC", L"蒙古文设置", WS_CHILD | WS_VISIBLE, 20, y, 100, 25, m_hwnd, nullptr, hInst, nullptr); SendMessage(hTitleM, WM_SETFONT, (WPARAM)m_hFontBold, TRUE); CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_ETCHEDHORZ, 120, y + 12, 320, 2, m_hwnd, nullptr, hInst, nullptr);
+
         y += 45; CreateWindowW(L"STATIC", L"\u8499\u53E4\u6587\u5B57\u4F53:", WS_CHILD | WS_VISIBLE, 20, y, labelW, 20, m_hwnd, nullptr, hInst, nullptr); m_hComboFontM = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, ctrlX, y - 3, 250, 200, m_hwnd, (HMENU)3006, hInst, nullptr); PopulateFontsCombo(m_hComboFontM, g_panelMongolFont);
+
         y += gap; CreateWindowW(L"STATIC", L"\u8499\u53E4\u6587\u5B57\u4F53\u989C\u8272:", WS_CHILD | WS_VISIBLE, 20, y, labelW, 20, m_hwnd, nullptr, hInst, nullptr); m_hBtnColorM = CreateWindowW(L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, ctrlX, y - 3, 80, 25, m_hwnd, (HMENU)3001, hInst, nullptr);
+
         y += gap; CreateWindowW(L"STATIC", L"\u8499\u53E4\u6587\u9AD8\u4EAE\u989C\u8272:", WS_CHILD | WS_VISIBLE, 20, y, labelW, 20, m_hwnd, nullptr, hInst, nullptr); m_hBtnColorHM = CreateWindowW(L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, ctrlX, y - 3, 80, 25, m_hwnd, (HMENU)3008, hInst, nullptr);
 
         y += 60; HWND hTitleC = CreateWindowW(L"STATIC", L"中文设置", WS_CHILD | WS_VISIBLE, 20, y, 100, 25, m_hwnd, nullptr, hInst, nullptr); SendMessage(hTitleC, WM_SETFONT, (WPARAM)m_hFontBold, TRUE); CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_ETCHEDHORZ, 120, y + 12, 320, 2, m_hwnd, nullptr, hInst, nullptr);
+
         y += 45; CreateWindowW(L"STATIC", L"\u4E2D\u6587\u5B57\u4F53:", WS_CHILD | WS_VISIBLE, 20, y, labelW, 20, m_hwnd, nullptr, hInst, nullptr); m_hComboFontC = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, ctrlX, y - 3, 250, 200, m_hwnd, (HMENU)3007, hInst, nullptr); PopulateFontsCombo(m_hComboFontC, g_panelChineseFont);
+
         y += gap; CreateWindowW(L"STATIC", L"\u4E2D\u6587\u5B57\u4F53\u989C\u8272:", WS_CHILD | WS_VISIBLE, 20, y, labelW, 20, m_hwnd, nullptr, hInst, nullptr); m_hBtnColorC = CreateWindowW(L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, ctrlX, y - 3, 80, 25, m_hwnd, (HMENU)3002, hInst, nullptr);
+
         y += gap; CreateWindowW(L"STATIC", L"\u4E2D\u6587\u9AD8\u4EAE\u989C\u8272:", WS_CHILD | WS_VISIBLE, 20, y, labelW, 20, m_hwnd, nullptr, hInst, nullptr); m_hBtnColorHC = CreateWindowW(L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, ctrlX, y - 3, 80, 25, m_hwnd, (HMENU)3009, hInst, nullptr);
 
         y += 50; RECT rc; GetClientRect(m_hwnd, &rc); SCROLLINFO si = { sizeof(SCROLLINFO) }; si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS; si.nMin = 0; si.nMax = y; si.nPage = rc.bottom; si.nPos = 0; SetScrollInfo(m_hwnd, SB_VERT, &si, TRUE);
@@ -425,15 +449,20 @@ public:
         HWND child = GetWindow(m_hwnd, GW_CHILD);
         while (child) { SendMessage(child, WM_SETFONT, (WPARAM)hFont, TRUE); child = GetWindow(child, GW_HWNDNEXT); }
         SendMessage(hTitleBase, WM_SETFONT, (WPARAM)m_hFontBold, TRUE); SendMessage(hTitleM, WM_SETFONT, (WPARAM)m_hFontBold, TRUE); SendMessage(hTitleC, WM_SETFONT, (WPARAM)m_hFontBold, TRUE);
+
+        // 【调用官方接口】
+        m_darkHooks.AddDialogWithControls(m_hwnd);
     }
 
     ~MongolPrefsPanelInstance() { if (m_hwnd) { SetWindowLongPtr(m_hwnd, GWLP_WNDPROC, (LONG_PTR)m_oldWndProc); DestroyWindow(m_hwnd); } if (m_hFontBold) DeleteObject(m_hFontBold); }
     virtual HWND get_wnd() override { return m_hwnd; }
-    virtual t_uint32 get_state() override { return preferences_state::resettable | (m_dirty ? preferences_state::changed : 0); }
+    // 【加上 dark_mode_supported 标志】
+    virtual t_uint32 get_state() override { return preferences_state::resettable | (m_dirty ? preferences_state::changed : 0) | preferences_state::dark_mode_supported; }
 
     virtual void apply() override {
         g_panelFontSize = (int)SendMessage(m_hSliderFontSize, TBM_GETPOS, 0, 0); g_panelDisplayMode = (int)SendMessage(m_hComboDisplayMode, CB_GETCURSEL, 0, 0);
         g_panelShowTip = (SendMessage(m_hChkShowTip, BM_GETCHECK, 0, 0) == BST_CHECKED);
+        g_panelBgFollowTheme = (SendMessage(m_hChkFollowBgTheme, BM_GETCHECK, 0, 0) == BST_CHECKED);
         g_panelOffsetX = (int)SendMessage(m_hSliderOffsetX, TBM_GETPOS, 0, 0) - 300;
         g_panelFullScreenOffsetX = (int)SendMessage(m_hSliderFullScreenOffsetX, TBM_GETPOS, 0, 0) - 1000;
         int idxM = (int)SendMessage(m_hComboFontM, CB_GETCURSEL, 0, 0); if (idxM != CB_ERR) { wchar_t buf[256]; SendMessage(m_hComboFontM, CB_GETLBTEXT, idxM, (LPARAM)buf); g_panelMongolFont = buf; }
@@ -452,6 +481,7 @@ public:
     virtual void reset() override {
         SendMessage(m_hSliderFontSize, TBM_SETPOS, TRUE, 15); SetWindowTextW(m_hLabelFontSize, L"15"); SendMessage(m_hComboDisplayMode, CB_SETCURSEL, 0, 0); g_panelDisplayMode = 0;
         g_panelShowTip = true; SendMessage(m_hChkShowTip, BM_SETCHECK, BST_CHECKED, 0);
+        g_panelBgFollowTheme = true; SendMessage(m_hChkFollowBgTheme, BM_SETCHECK, BST_CHECKED, 0);
 
         SendMessage(m_hSliderOffsetX, TBM_SETPOS, TRUE, 300); SetWindowTextW(m_hLabelOffsetX, L"0");
         SendMessage(m_hSliderFullScreenOffsetX, TBM_SETPOS, TRUE, 1000); SetWindowTextW(m_hLabelFullScreenOffsetX, L"0");
