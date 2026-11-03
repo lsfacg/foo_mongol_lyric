@@ -1,4 +1,4 @@
-#include "stdafx.h"
+﻿#include "stdafx.h"
 #include <windows.h>
 #include <SDK/ui_element.h>
 #include <helpers/atl-misc.h> 

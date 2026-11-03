@@ -1,5 +1,7 @@
 ﻿#include "stdafx.h"
 #include <windows.h>
+#include <windowsx.h>
+#include <winuser.h>
 #include <commctrl.h>
 #include <cmath>
 #include <string>
