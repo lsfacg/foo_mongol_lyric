@@ -19,7 +19,7 @@ foobar2000 Traditional Mongolian Vertical Lyrics Plugin<br>
 注意事项：<br>
 1.自动读取音频文件 ID3 标签内嵌 LYRICS 歌词，以及音频同路径下同名的 LRC 歌词文件<br>
 2.插件暂不支持网络搜索，请自行准备内嵌歌词的音频文件 或 LRC歌词文件<br>
-3.支持系统平台：Win10/Win11
+3.支持系统平台：Win10/Win11<br>
 4.暂不支持显示无时间轴的纯文本<br>
 
 歌词写法：<br>
