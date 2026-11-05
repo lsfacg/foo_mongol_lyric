@@ -156,6 +156,7 @@ private:
     bool m_isHovered = false;
     bool m_isCursorVisible = true;
     DWORD m_lastMouseMoveTick = 0;
+    bool m_isMenuOpen = false; // 【新增：记录菜单是否打开】
 
 public:
     FullScreenLyric(MongolPanelInstance* parent);
@@ -370,7 +371,8 @@ LRESULT FullScreenLyric::OnTimer(UINT, WPARAM, LPARAM, BOOL&) {
     }
     if (m_lastReloadFlag != g_reload_flag) { m_lastReloadFlag = g_reload_flag; m_lastRenderIdx = -1; }
 
-    if (m_isCursorVisible && (GetTickCount() - m_lastMouseMoveTick > 3000)) {
+    // 【新增：如果菜单没有打开，且鼠标静止，才隐藏光标】
+    if (!m_isMenuOpen && m_isCursorVisible && (GetTickCount() - m_lastMouseMoveTick > 3000)) {
         ShowCursor(FALSE);
         m_isCursorVisible = false;
     }
@@ -529,7 +531,17 @@ LRESULT FullScreenLyric::OnContextMenu(UINT, WPARAM, LPARAM lParam, BOOL&) {
     AppendMenuW(hMenu, MF_STRING, 6, L"\u9762\u677F\u6B4C\u8BCD\u8BBE\u7F6E");
 
     POINT pt; GetCursorPos(&pt);
+
+    // 【新增：菜单打开前上锁】
+    m_isMenuOpen = true;
+
     int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, m_hWnd, NULL);
+
+    // 【新增：菜单关闭后解锁，并强制恢复光标、重置时间】
+    m_isMenuOpen = false;
+    m_lastMouseMoveTick = GetTickCount();
+    if (!m_isCursorVisible) { ShowCursor(TRUE); m_isCursorVisible = true; }
+
     DestroyMenu(hSubMenu); DestroyMenu(hMenu);
 
     if (cmd == 1) { g_isVisible = !g_isVisible; if (g_hwndLyrics) ::ShowWindow(g_hwndLyrics, g_isVisible ? SW_SHOW : SW_HIDE); }
@@ -659,7 +671,13 @@ LRESULT FullScreenLyric::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
             float startY = height * 0.0833f;
             if (startY < 50.0f) startY = 50.0f;
 
-            float step = (float)g_panelFontSize * 8.7f;
+            // 【新增逻辑】全屏歌词根据显示模式动态调整列间距
+            float step = (float)g_panelFontSize * 8.7f; // 双语默认间距
+            if (g_panelDisplayMode == 1 || g_panelDisplayMode == 2) {
+                // 仅蒙古文 或 仅中文时，缩小间距
+                step = (float)g_panelFontSize * 5.5f;
+            }
+
             float virtualIdx = 0.0f;
 
             if (m_isActuallyDragging || m_isSnapping) {
@@ -1094,7 +1112,13 @@ LRESULT MongolPanelInstance::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
             if (highlightIdx >= 0 && highlightIdx < (int)renderLyrics.size()) {
                 int startIdx = highlightIdx > 8 ? highlightIdx - 8 : 0;
                 int endIdx = highlightIdx + 15 < (int)renderLyrics.size() ? highlightIdx + 15 : (int)renderLyrics.size() - 1;
-                float step = (float)g_panelFontSize * 3.7f;
+
+                // 【新增逻辑】根据显示模式动态调整列间距
+                float step = (float)g_panelFontSize * 3.7f; // 双语默认间距（保持不变）
+                if (g_panelDisplayMode == 1 || g_panelDisplayMode == 2) {
+                    // 仅蒙古文 或 仅中文时，缩小间距
+                    step = (float)g_panelFontSize * 2.2f;
+                }
 
                 D2D1_RECT_F clipRect = D2D1::RectF(0.0f, panelStartY, width, height);
                 m_pRenderTarget->PushAxisAlignedClip(clipRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
