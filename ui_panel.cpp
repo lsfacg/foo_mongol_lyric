@@ -663,10 +663,10 @@ LRESULT FullScreenLyric::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
             float startY = height * 0.0833f;
             if (startY < 50.0f) startY = 50.0f;
 
-            // 全曲扫描：判断这首歌是否包含双语行
+            // 全曲扫描：判断这首歌是否包含双语行（蒙科立编码也算双语）
             bool hasDualLine = false;
             for (const auto& line : renderLyrics) {
-                if (!line.mongolText.empty() && !line.chineseText.empty()) { hasDualLine = true; break; }
+                if ((!line.mongolText.empty() || !line.mongolMenkText.empty()) && !line.chineseText.empty()) { hasDualLine = true; break; }
             }
 
             float step = (float)g_panelFontSize * 8.7f; // 双语默认间距
@@ -1109,10 +1109,10 @@ LRESULT MongolPanelInstance::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
                 int startIdx = highlightIdx > 8 ? highlightIdx - 8 : 0;
                 int endIdx = highlightIdx + 15 < (int)renderLyrics.size() ? highlightIdx + 15 : (int)renderLyrics.size() - 1;
 
-                // 全曲扫描：判断这首歌是否包含双语行
+                // 全曲扫描：判断这首歌是否包含双语行（蒙科立编码也算双语）
                 bool hasDualLine = false;
                 for (const auto& line : renderLyrics) {
-                    if (!line.mongolText.empty() && !line.chineseText.empty()) { hasDualLine = true; break; }
+                    if ((!line.mongolText.empty() || !line.mongolMenkText.empty()) && !line.chineseText.empty()) { hasDualLine = true; break; }
                 }
 
                 float step = (float)g_panelFontSize * 3.7f; // 双语默认间距
