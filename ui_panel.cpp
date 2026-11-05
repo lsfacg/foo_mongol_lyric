@@ -156,7 +156,7 @@ private:
     bool m_isHovered = false;
     bool m_isCursorVisible = true;
     DWORD m_lastMouseMoveTick = 0;
-    bool m_isMenuOpen = false; // 【新增：记录菜单是否打开】
+    bool m_isMenuOpen = false;
 
 public:
     FullScreenLyric(MongolPanelInstance* parent);
@@ -371,7 +371,6 @@ LRESULT FullScreenLyric::OnTimer(UINT, WPARAM, LPARAM, BOOL&) {
     }
     if (m_lastReloadFlag != g_reload_flag) { m_lastReloadFlag = g_reload_flag; m_lastRenderIdx = -1; }
 
-    // 【新增：如果菜单没有打开，且鼠标静止，才隐藏光标】
     if (!m_isMenuOpen && m_isCursorVisible && (GetTickCount() - m_lastMouseMoveTick > 3000)) {
         ShowCursor(FALSE);
         m_isCursorVisible = false;
@@ -381,7 +380,6 @@ LRESULT FullScreenLyric::OnTimer(UINT, WPARAM, LPARAM, BOOL&) {
 }
 
 LRESULT FullScreenLyric::OnMouseWheel(UINT, WPARAM wParam, LPARAM, BOOL&) {
-    // 恢复鼠标
     m_lastMouseMoveTick = GetTickCount();
     if (!m_isCursorVisible) {
         ShowCursor(TRUE);
@@ -414,7 +412,7 @@ LRESULT FullScreenLyric::OnDestroy(UINT, WPARAM, LPARAM, BOOL&) { KillTimer(1); 
 
 LRESULT FullScreenLyric::OnNcDestroy(UINT, WPARAM, LPARAM, BOOL&) {
     if (!m_isCursorVisible) {
-        ShowCursor(TRUE); // 退出时强制恢复鼠标
+        ShowCursor(TRUE);
         m_isCursorVisible = true;
     }
     if (m_pParent) { m_pParent->OnFullScreenClosed(); }
@@ -424,7 +422,6 @@ LRESULT FullScreenLyric::OnNcDestroy(UINT, WPARAM, LPARAM, BOOL&) {
 LRESULT FullScreenLyric::OnLButtonDblClk(UINT, WPARAM, LPARAM, BOOL&) { PostMessage(WM_CLOSE); return 0; }
 
 LRESULT FullScreenLyric::OnLButtonDown(UINT, WPARAM, LPARAM lParam, BOOL&) {
-    // 恢复鼠标
     m_lastMouseMoveTick = GetTickCount();
     if (!m_isCursorVisible) {
         ShowCursor(TRUE);
@@ -443,7 +440,6 @@ LRESULT FullScreenLyric::OnLButtonDown(UINT, WPARAM, LPARAM lParam, BOOL&) {
 }
 
 LRESULT FullScreenLyric::OnMouseMove(UINT, WPARAM, LPARAM lParam, BOOL&) {
-    // 恢复鼠标
     m_lastMouseMoveTick = GetTickCount();
     if (!m_isCursorVisible) {
         ShowCursor(TRUE);
@@ -483,7 +479,6 @@ LRESULT FullScreenLyric::OnLButtonUp(UINT, WPARAM, LPARAM, BOOL&) {
     if (m_isMouseDown) {
         m_isMouseDown = false; ReleaseCapture();
 
-        // 恢复鼠标
         if (!m_isCursorVisible) { ShowCursor(TRUE); m_isCursorVisible = true; }
         m_lastMouseMoveTick = GetTickCount();
 
@@ -508,7 +503,6 @@ LRESULT FullScreenLyric::OnLButtonUp(UINT, WPARAM, LPARAM, BOOL&) {
 }
 
 LRESULT FullScreenLyric::OnContextMenu(UINT, WPARAM, LPARAM lParam, BOOL&) {
-    // 恢复鼠标
     m_lastMouseMoveTick = GetTickCount();
     if (!m_isCursorVisible) {
         ShowCursor(TRUE);
@@ -532,12 +526,10 @@ LRESULT FullScreenLyric::OnContextMenu(UINT, WPARAM, LPARAM lParam, BOOL&) {
 
     POINT pt; GetCursorPos(&pt);
 
-    // 【新增：菜单打开前上锁】
     m_isMenuOpen = true;
 
     int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, m_hWnd, NULL);
 
-    // 【新增：菜单关闭后解锁，并强制恢复光标、重置时间】
     m_isMenuOpen = false;
     m_lastMouseMoveTick = GetTickCount();
     if (!m_isCursorVisible) { ShowCursor(TRUE); m_isCursorVisible = true; }
@@ -671,10 +663,14 @@ LRESULT FullScreenLyric::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
             float startY = height * 0.0833f;
             if (startY < 50.0f) startY = 50.0f;
 
-            // 【新增逻辑】全屏歌词根据显示模式动态调整列间距
+            // 全曲扫描：判断这首歌是否包含双语行
+            bool hasDualLine = false;
+            for (const auto& line : renderLyrics) {
+                if (!line.mongolText.empty() && !line.chineseText.empty()) { hasDualLine = true; break; }
+            }
+
             float step = (float)g_panelFontSize * 8.7f; // 双语默认间距
-            if (g_panelDisplayMode == 1 || g_panelDisplayMode == 2) {
-                // 仅蒙古文 或 仅中文时，缩小间距
+            if (g_panelDisplayMode == 1 || g_panelDisplayMode == 2 || !hasDualLine) {
                 step = (float)g_panelFontSize * 5.5f;
             }
 
@@ -1113,10 +1109,14 @@ LRESULT MongolPanelInstance::OnPaint(UINT, WPARAM, LPARAM, BOOL&) {
                 int startIdx = highlightIdx > 8 ? highlightIdx - 8 : 0;
                 int endIdx = highlightIdx + 15 < (int)renderLyrics.size() ? highlightIdx + 15 : (int)renderLyrics.size() - 1;
 
-                // 【新增逻辑】根据显示模式动态调整列间距
-                float step = (float)g_panelFontSize * 3.7f; // 双语默认间距（保持不变）
-                if (g_panelDisplayMode == 1 || g_panelDisplayMode == 2) {
-                    // 仅蒙古文 或 仅中文时，缩小间距
+                // 全曲扫描：判断这首歌是否包含双语行
+                bool hasDualLine = false;
+                for (const auto& line : renderLyrics) {
+                    if (!line.mongolText.empty() && !line.chineseText.empty()) { hasDualLine = true; break; }
+                }
+
+                float step = (float)g_panelFontSize * 3.7f; // 双语默认间距
+                if (g_panelDisplayMode == 1 || g_panelDisplayMode == 2 || !hasDualLine) {
                     step = (float)g_panelFontSize * 2.2f;
                 }
 
