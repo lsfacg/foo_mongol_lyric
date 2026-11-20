@@ -28,8 +28,11 @@ extern bool g_isLocked;
 extern bool g_isTopmost;
 extern HWND g_hwndLyrics;
 extern int g_reload_flag;
-
+extern void ShowLyricEditor(HWND hParent); // 只加这一行！
+// 【新增】声明歌词编辑器入口函数
+extern void ShowLyricEditor(HWND hParent);
 int g_panelFontSize = 15;
+
 std::wstring g_panelMongolFont = L"Mongolian Baiti";
 std::wstring g_panelChineseFont = L"Microsoft YaHei";
 D2D1_COLOR_F g_panelMongolColor = D2D1::ColorF(0.0f, 0.0f, 0.0f, 1.0f);
@@ -508,7 +511,6 @@ LRESULT FullScreenLyric::OnContextMenu(UINT, WPARAM, LPARAM lParam, BOOL&) {
         ShowCursor(TRUE);
         m_isCursorVisible = true;
     }
-
     HMENU hMenu = CreatePopupMenu(); HMENU hSubMenu = CreatePopupMenu();
     AppendMenuW(hMenu, MF_STRING | (g_isVisible ? MF_CHECKED : MF_UNCHECKED), 1, L"\u542F\u7528\u684C\u9762\u6B4C\u8BCD");
     AppendMenuW(hMenu, MF_STRING | (g_isLocked ? MF_CHECKED : MF_UNCHECKED), 2, L"\u9501\u5B9A\u684C\u9762\u6B4C\u8BCD");
@@ -524,16 +526,16 @@ LRESULT FullScreenLyric::OnContextMenu(UINT, WPARAM, LPARAM lParam, BOOL&) {
     AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
     AppendMenuW(hMenu, MF_STRING, 6, L"\u9762\u677F\u6B4C\u8BCD\u8BBE\u7F6E");
 
+    // 【新增】添加歌词编辑器菜单项
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(hMenu, MF_STRING, 8, L"蒙古文歌词编辑器");
+
     POINT pt; GetCursorPos(&pt);
-
     m_isMenuOpen = true;
-
     int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, m_hWnd, NULL);
-
     m_isMenuOpen = false;
     m_lastMouseMoveTick = GetTickCount();
     if (!m_isCursorVisible) { ShowCursor(TRUE); m_isCursorVisible = true; }
-
     DestroyMenu(hSubMenu); DestroyMenu(hMenu);
 
     if (cmd == 1) { g_isVisible = !g_isVisible; if (g_hwndLyrics) ::ShowWindow(g_hwndLyrics, g_isVisible ? SW_SHOW : SW_HIDE); }
@@ -550,6 +552,10 @@ LRESULT FullScreenLyric::OnContextMenu(UINT, WPARAM, LPARAM lParam, BOOL&) {
     else if (cmd == 5) { if (m_pParent) m_pParent->ReloadLyrics(); m_lastRenderIdx = -1; }
     else if (cmd == 6) { fb2k::inMainThread([] { static_api_ptr_t<ui_control>()->show_preferences(guid_pref_panel); }); }
     else if (cmd >= 10 && cmd <= 12) { g_panelDisplayMode = cmd - 10; SavePanelSettings(); }
+
+    // 【新增】处理歌词编辑器点击事件
+    else if (cmd == 8) { ShowLyricEditor(m_hWnd); }
+
     Invalidate(); return 0;
 }
 
@@ -904,7 +910,6 @@ LRESULT MongolPanelInstance::OnContextMenu(UINT, WPARAM, LPARAM lParam, BOOL& bH
         bHandled = FALSE;
         return 0;
     }
-
     HMENU hMenu = CreatePopupMenu(); HMENU hSubMenu = CreatePopupMenu();
     AppendMenuW(hMenu, MF_STRING | (g_isVisible ? MF_CHECKED : MF_UNCHECKED), 1, L"\u542F\u7528\u684C\u9762\u6B4C\u8BCD");
     AppendMenuW(hMenu, MF_STRING | (g_isLocked ? MF_CHECKED : MF_UNCHECKED), 2, L"\u9501\u5B9A\u684C\u9762\u6B4C\u8BCD");
@@ -919,6 +924,10 @@ LRESULT MongolPanelInstance::OnContextMenu(UINT, WPARAM, LPARAM lParam, BOOL& bH
     AppendMenuW(hMenu, MF_STRING, 5, L"\u91CD\u65B0\u8F7D\u5165\u6B4C\u8BCD");
     AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
     AppendMenuW(hMenu, MF_STRING, 6, L"\u9762\u677F\u6B4C\u8BCD\u8BBE\u7F6E");
+
+    // 【新增】添加歌词编辑器菜单项
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(hMenu, MF_STRING, 8, L"蒙古文歌词编辑器");
 
     POINT pt; GetCursorPos(&pt);
     int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, m_hWnd, NULL);
@@ -938,6 +947,10 @@ LRESULT MongolPanelInstance::OnContextMenu(UINT, WPARAM, LPARAM lParam, BOOL& bH
     else if (cmd == 5) { ReloadLyrics(); }
     else if (cmd == 6) { fb2k::inMainThread([] { static_api_ptr_t<ui_control>()->show_preferences(guid_pref_panel); }); }
     else if (cmd >= 10 && cmd <= 12) { g_panelDisplayMode = cmd - 10; SavePanelSettings(); Invalidate(); }
+
+    // 【新增】处理歌词编辑器点击事件
+    else if (cmd == 8) { ShowLyricEditor(m_hWnd); }
+
     return 0;
 }
 
