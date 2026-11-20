@@ -109,12 +109,15 @@ inline bool IsDarkMode() {
     return (g_pEditorHooks != nullptr) && (bool)(*g_pEditorHooks);
 }
 
-// ★★★ 修复：使用 REG_BINARY 完整保存 LOGFONTW，修复键名空格错误 ★★★
+// ★★★ 前向声明（解决 C3861 找不到标识符的问题） ★★★
+std::wstring GetTrackDisplayTitle(metadb_handle_ptr item);
+std::wstring GetLrcPathFromPath(const std::wstring& audioPath);
+void TryCloseWindow();
+
 void SaveSettings() {
     HKEY hKey;
     if (RegCreateKeyExW(HKEY_CURRENT_USER, REG_PATH, 0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
         RegSetValueExW(hKey, L"FontSize", 0, REG_DWORD, (BYTE*)&g_editorFontSize, sizeof(g_editorFontSize));
-        // 完整保存字体结构体（包含 CharSet, PitchAndFamily 等关键属性）
         RegSetValueExW(hKey, L"LogFontData", 0, REG_BINARY, (const BYTE*)&g_logFont, sizeof(LOGFONTW));
 
         RegSetValueExW(hKey, L"WinLeft", 0, REG_DWORD, (BYTE*)&g_windowRect.left, sizeof(LONG));
@@ -131,10 +134,8 @@ void LoadSettings() {
         DWORD size = sizeof(g_editorFontSize);
         RegQueryValueExW(hKey, L"FontSize", 0, NULL, (BYTE*)&g_editorFontSize, &size);
 
-        // 读取完整字体结构体
         size = sizeof(LOGFONTW);
         if (RegQueryValueExW(hKey, L"LogFontData", 0, NULL, (BYTE*)&g_logFont, &size) != ERROR_SUCCESS) {
-            // 首次运行或读取失败，初始化默认字体
             memset(&g_logFont, 0, sizeof(LOGFONTW));
             g_logFont.lfHeight = -g_editorFontSize;
             g_logFont.lfWeight = FW_NORMAL;
@@ -152,7 +153,6 @@ void LoadSettings() {
         RegCloseKey(hKey);
     }
     else {
-        // 注册表不存在，初始化默认
         memset(&g_logFont, 0, sizeof(LOGFONTW));
         g_logFont.lfHeight = -g_editorFontSize;
         g_logFont.lfWeight = FW_NORMAL;
@@ -217,6 +217,7 @@ void SetEditTextNoFlicker(const std::wstring& text, int caretPos = -1, int first
 }
 
 std::wstring GetFullText() {
+    if (!g_hEditBox) return L""; // ★★★ 修复 C6387 警告 ★★★
     int len = GetWindowTextLengthW(g_hEditBox);
     std::wstring text(len + 1, L'\0'); GetWindowTextW(g_hEditBox, &text[0], len + 1); text.resize(len); return text;
 }
@@ -259,7 +260,6 @@ void GotoCurrentLine() {
     }
 }
 
-// ★★★ 滚动优化：基于像素计算，只有不足4行时才微调，消除跳跃感 ★★★
 void ScrollToMakeVisible(int lineIndex) {
     if (!g_hEditBox || lineIndex < 0) return;
     RECT rc; SendMessage(g_hEditBox, EM_GETRECT, 0, (LPARAM)&rc);
@@ -285,12 +285,10 @@ void ScrollToMakeVisible(int lineIndex) {
     int spaceBelow = bottomY - (lineY + lineHeight);
     int linesBelow = spaceBelow / lineHeight;
 
-    // 只有当下方不足 4 行时，才向上滚动补足
     if (linesBelow < 4) {
         int scrollLines = 4 - linesBelow;
         SendMessage(g_hEditBox, EM_LINESCROLL, 0, scrollLines);
     }
-    // 如果目标行在视图上方（看不到了），则向下滚动
     else if (lineY < rc.top) {
         SendMessage(g_hEditBox, EM_LINESCROLL, 0, -(firstVisible - lineIndex));
     }
@@ -321,12 +319,10 @@ void ScrollToRevealTop(int lineIndex) {
     int spaceAbove = lineY - topY;
     int linesAbove = spaceAbove / lineHeight;
 
-    // 只有当上方不足 4 行时，才向下滚动补足
     if (linesAbove < 4) {
         int scrollLines = -(4 - linesAbove);
         SendMessage(g_hEditBox, EM_LINESCROLL, 0, scrollLines);
     }
-    // 如果目标行在视图下方，则向上滚动
     else if (lineY > rc.bottom) {
         int targetFirst = lineIndex - (rc.bottom - rc.top) / lineHeight + 1;
         if (targetFirst < 0) targetFirst = 0;
@@ -404,7 +400,7 @@ void InsertCurrentTime() {
     if (!g_hEditBox || !playback_control::get()->is_playing()) return;
     double pos = playback_control::get()->playback_get_position(); if (pos < 0) pos = 0;
     int min = (int)(pos / 60); int sec = (int)pos % 60; int ms = (int)((pos - (int)pos) * 100);
-    wchar_t timeStr[32]; swprintf_s(timeStr, L"[%02d:%02d.%02d]", min, sec, ms); // 无空格
+    wchar_t timeStr[32]; swprintf_s(timeStr, L"[%02d:%02d.%02d]", min, sec, ms);
     std::wstring ts = timeStr;
     int curLine = GetCurrentLineIndex();
     PushUndoState();
@@ -516,27 +512,21 @@ void RemoveTranslationLyrics() {
     g_isModified = true;
 }
 
-// ★★★ 终极字体刷新：彻底解决所有字体（蒙科立/Unicode）不立即生效、不持久化的问题 ★★★
-// ★★★ 修复：补回 WM_SETFONT（蒙科立等字体依赖控件基准字体的字符集），并强制重排 ★★★
 void ApplyNewFont() {
     if (!g_hEditBox) return;
 
-    // 使用 CHARFORMAT2W 以支持颜色设置（CHARFORMATW 不支持 crTextColor）
     CHARFORMAT2W cf;
     ZeroMemory(&cf, sizeof(cf));
     cf.cbSize = sizeof(CHARFORMAT2W);
-    cf.dwMask = CFM_FACE | CFM_SIZE | CFM_BOLD | CFM_COLOR; // ★ 增加 CFM_COLOR
+    cf.dwMask = CFM_FACE | CFM_SIZE | CFM_BOLD | CFM_COLOR;
 
     wcscpy_s(cf.szFaceName, g_logFont.lfFaceName[0] ? g_logFont.lfFaceName : L"Microsoft YaHei");
     cf.yHeight = g_editorFontSize * 15;
     if (g_logFont.lfWeight >= FW_BOLD) cf.dwEffects |= CFE_BOLD;
 
-    // ★ 核心修改：根据 foobar2000 深色模式设置字体颜色
-    // 深色模式：白色/浅灰色 (240,240,240)；浅色模式：黑色 (0,0,0)
     cf.crTextColor = IsDarkMode() ? RGB(240, 240, 240) : RGB(0, 0, 0);
-    cf.dwEffects &= ~CFE_AUTOCOLOR; // 禁用自动颜色，强制使用 crTextColor
+    cf.dwEffects &= ~CFE_AUTOCOLOR;
 
-    // SCF_ALL 会同时应用到已有文本和默认格式（新输入的文本也会是这个颜色）
     SendMessage(g_hEditBox, EM_SETCHARFORMAT, SCF_ALL, (LPARAM)&cf);
 
     PARAFORMAT2 pf;
@@ -546,7 +536,6 @@ void ApplyNewFont() {
     pf.bLineSpacingRule = 0;
     SendMessage(g_hEditBox, EM_SETPARAFORMAT, 0, (LPARAM)&pf);
 
-    // 强制立即重绘
     InvalidateRect(g_hEditBox, NULL, TRUE);
     UpdateWindow(g_hEditBox);
 }
@@ -825,12 +814,16 @@ static void DoLayout(HWND hwnd) {
     int width = rc.right, height = rc.bottom;
     int margin = 10, row1Y = 10, row2Y = 50, btnH = 32, btnW = 110, gap = 10;
     int x = margin;
+
+    // --- 第一行控件布局 ---
     if (g_hBtnPause) SetWindowPos(g_hBtnPause, NULL, x, row1Y, 70, btnH, SWP_NOZORDER); x += 70 + gap;
     HWND hInsert = GetDlgItem(hwnd, IDC_BTN_INSERT);
     if (hInsert) SetWindowPos(hInsert, NULL, x, row1Y, 110, btnH, SWP_NOZORDER); x += 110 + gap;
     if (g_hChkDual) SetWindowPos(g_hChkDual, NULL, x, row1Y + 6, 110, 24, SWP_NOZORDER); x += 110 + gap;
     if (g_hSliderProgress) SetWindowPos(g_hSliderProgress, NULL, x, row1Y + 5, SLIDER_FIXED_WIDTH, 30, SWP_NOZORDER); x += SLIDER_FIXED_WIDTH + 10;
     if (g_hLblTime) SetWindowPos(g_hLblTime, NULL, x, row1Y + 6, TIME_LABEL_WIDTH, 24, SWP_NOZORDER);
+
+    // --- 第二行控件布局 ---
     int bx = margin;
     HWND hGoto = GetDlgItem(hwnd, IDC_BTN_GOTO_LINE), hBack = GetDlgItem(hwnd, IDC_BTN_BACK), hUndo = GetDlgItem(hwnd, IDC_BTN_UNDO), hRemCur = GetDlgItem(hwnd, IDC_BTN_REMOVE_CUR), hRemAll = GetDlgItem(hwnd, IDC_BTN_REMOVE_ALL);
     if (hGoto) SetWindowPos(hGoto, NULL, bx, row2Y, btnW, btnH, SWP_NOZORDER); bx += btnW + gap;
@@ -838,14 +831,28 @@ static void DoLayout(HWND hwnd) {
     if (hUndo) SetWindowPos(hUndo, NULL, bx, row2Y, btnW, btnH, SWP_NOZORDER); bx += btnW + gap;
     if (hRemCur) SetWindowPos(hRemCur, NULL, bx, row2Y, btnW, btnH, SWP_NOZORDER); bx += btnW + gap;
     if (hRemAll) SetWindowPos(hRemAll, NULL, bx, row2Y, btnW, btnH, SWP_NOZORDER);
-    int editY = row2Y + btnH + margin;
-    int editH = height - editY - 60; if (editH < 80) editH = 80;
+
+    // --- 编辑框与底部按钮布局 (核心修复区域) ---
+    int editY = row2Y + btnH + margin; // 92
+    int bottomY = height - 45;         // 底部按钮的 Y 坐标
+
+    // ★★★ 修复 1：动态计算编辑框高度，确保其底部与按钮顶部至少保留 15 像素的安全间距，防止重叠 ★★★
+    int editH = bottomY - editY - 15;
+    if (editH < 80) editH = 80; // 保证最小编辑区高度
     if (g_hEditBox) SetWindowPos(g_hEditBox, NULL, margin, editY, width - 2 * margin, editH, SWP_NOZORDER);
-    int bottomY = height - 45; int wBtn = 80; int rightX = width - margin;
+
+    // --- 底部按钮布局 ---
+    int wBtn = 80;
+    int rightX = width - margin;
     HWND hCancel = GetDlgItem(hwnd, IDC_BTN_CANCEL), hOk = GetDlgItem(hwnd, IDC_BTN_OK), hApply = GetDlgItem(hwnd, IDC_BTN_APPLY);
-    if (hCancel) SetWindowPos(hCancel, NULL, rightX - wBtn, bottomY, wBtn, 32, SWP_NOZORDER); rightX -= wBtn + 10;
-    if (hOk) SetWindowPos(hOk, NULL, rightX - wBtn, bottomY, wBtn, 32, SWP_NOZORDER); rightX -= wBtn + 10;
-    if (hApply) SetWindowPos(hApply, NULL, rightX - wBtn, bottomY, wBtn, 32, SWP_NOZORDER);
+
+    // ★★★ 修复 2：使用 HWND_TOP 强制将底部按钮置于 Z-order 最顶层，防止被 RichEdit 控件遮挡 ★★★
+    // 注意：按 Apply -> Ok -> Cancel 的顺序调用 HWND_TOP，最终层叠顺序为 Cancel(最上) -> Ok -> Apply，均能正常显示
+    if (hApply) SetWindowPos(hApply, HWND_TOP, rightX - wBtn, bottomY, wBtn, 32, 0);
+    rightX -= wBtn + 10;
+    if (hOk) SetWindowPos(hOk, HWND_TOP, rightX - wBtn, bottomY, wBtn, 32, 0);
+    rightX -= wBtn + 10;
+    if (hCancel) SetWindowPos(hCancel, HWND_TOP, rightX - wBtn, bottomY, wBtn, 32, 0);
 }
 
 void TryCloseWindow() {
@@ -894,7 +901,7 @@ LRESULT CALLBACK EditorWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
         g_hLightBrush = GetSysColorBrush(COLOR_WINDOW);
         if (!g_pEditorHooks) g_pEditorHooks = new fb2k::CCoreDarkModeHooks();
 
-        LoadSettings(); // 加载完整字体设置
+        LoadSettings();
 
         metadb_handle_ptr item; if (!playback_control::get()->get_now_playing(item)) { MessageBoxW(hwnd, L"没有播放歌曲", L"提示", MB_ICONINFORMATION); return -1; }
         pfc::string8 filepath = item->get_path(); pfc::stringcvt::string_wide_from_utf8 widePath(filepath); g_currentTrackPath = GetLrcPathFromPath(widePath.get_ptr());
@@ -942,11 +949,17 @@ LRESULT CALLBACK EditorWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
 
         g_OldEditProc = (WNDPROC)SetWindowLongPtr(g_hEditBox, GWLP_WNDPROC, (LONG_PTR)EditSubclassProc);
 
-        // ★★★ 关键修复：先加载文本，最后再应用字体 ★★★
+        // ★★★ 补全底部缺失的 应用、确定、取消 按钮创建代码 ★★★
+        HWND hApply = CreateWindowW(L"BUTTON", L"应用", WS_CHILD | WS_VISIBLE, 0, 0, 80, 32, hwnd, (HMENU)IDC_BTN_APPLY, NULL, NULL);
+        SendMessage(hApply, WM_SETFONT, (WPARAM)g_hButtonFont, TRUE);
+        HWND hOk = CreateWindowW(L"BUTTON", L"确定", WS_CHILD | WS_VISIBLE, 0, 0, 80, 32, hwnd, (HMENU)IDC_BTN_OK, NULL, NULL);
+        SendMessage(hOk, WM_SETFONT, (WPARAM)g_hButtonFont, TRUE);
+        HWND hCancel = CreateWindowW(L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE, 0, 0, 80, 32, hwnd, (HMENU)IDC_BTN_CANCEL, NULL, NULL);
+        SendMessage(hCancel, WM_SETFONT, (WPARAM)g_hButtonFont, TRUE);
+
         std::wstring lyrics = LoadLyricsText(item, g_currentTrackPath);
         SetWindowTextW(g_hEditBox, lyrics.c_str());
 
-        // 最后调用 ApplyNewFont，确保字体能应用到已加载的文本上
         ApplyNewFont();
 
         if (g_sourceIsEmbedded) SetWindowTextW(hwnd, (wTitle + L" (内嵌标签)").c_str());
