@@ -28,7 +28,6 @@ extern bool g_isLocked;
 extern bool g_isTopmost;
 extern HWND g_hwndLyrics;
 extern int g_reload_flag;
-extern void ShowLyricEditor(HWND hParent); // 只加这一行！
 // 【新增】声明歌词编辑器入口函数
 extern void ShowLyricEditor(HWND hParent);
 int g_panelFontSize = 15;
@@ -609,23 +608,46 @@ void MongolPanelInstance::LoadLyricsForCurrentTrack() {
                     std::string timeStr = line.substr(1, closeBracket - 1); std::string text = line.substr(closeBracket + 1); int min = 0, sec = 0, ms = 0;
                     if (sscanf_s(timeStr.c_str(), "%d:%d.%d", &min, &sec, &ms) >= 2) {
                         size_t dot = timeStr.find('.'); int msDigits = 2; if (dot != std::string::npos) msDigits = (int)(timeStr.length() - dot - 1); double msFactor = (msDigits == 3) ? 1000.0 : 100.0; double totalSeconds = min * 60.0 + sec + (ms / msFactor);
-                        pfc::stringcvt::string_wide_from_utf8 wideText(text.c_str()); std::wstring wText = wideText.get_ptr(); size_t first = wText.find_first_not_of(L" ");
+                        pfc::stringcvt::string_wide_from_utf8 wideText(text.c_str()); std::wstring wText = wideText.get_ptr();
+                        size_t first = wText.find_first_not_of(L" ");
                         if (first != std::wstring::npos) {
-                            size_t last = wText.find_last_not_of(L" "); wText = wText.substr(first, (last - first + 1));
-                            if (!wText.empty()) {
-                                bool hasMongol = false; bool hasMenk = false;
-                                for (wchar_t c : wText) {
-                                    if (c >= 0x1800 && c <= 0x18AF) hasMongol = true;
-                                    else if (c >= 0xE000 && c <= 0xF8FF) hasMenk = true;
-                                }
-                                if (!m_lyrics.empty() && abs(m_lyrics.back().time - totalSeconds) < 1.5) {
-                                    if (hasMongol && m_lyrics.back().mongolText.empty()) m_lyrics.back().mongolText = wText;
-                                    else if (hasMenk && m_lyrics.back().mongolMenkText.empty()) m_lyrics.back().mongolMenkText = wText;
-                                    else if (!hasMongol && !hasMenk && m_lyrics.back().chineseText.empty()) m_lyrics.back().chineseText = wText;
-                                    else { PanelLyricLine nl = { totalSeconds, L"", L"", L"" }; if (hasMongol) nl.mongolText = wText; else if (hasMenk) nl.mongolMenkText = wText; else nl.chineseText = wText; m_lyrics.push_back(nl); }
-                                }
+                            size_t last = wText.find_last_not_of(L" ");
+                            wText = wText.substr(first, (last - first + 1));
+                        }
+                        else {
+                            wText.clear();
+                        }
+
+                        // 【修改】判断上一行状态，用于正确合并 / 保留空行
+                        bool lastIsBlank = !m_lyrics.empty()
+                            && m_lyrics.back().mongolText.empty()
+                            && m_lyrics.back().mongolMenkText.empty()
+                            && m_lyrics.back().chineseText.empty();
+                        bool sameTime = !m_lyrics.empty() && fabs(m_lyrics.back().time - totalSeconds) < 0.05;
+
+                        if (wText.empty()) {
+                            // 【修改】带时间轴的空行：作为时间轴占位保留（播放停顿 / 滚动定位正确）
+                            // 同一时间戳已有行则跳过，避免重复
+                            if (!sameTime) {
+                                PanelLyricLine nl = { totalSeconds, L"", L"", L"" };
+                                m_lyrics.push_back(nl);
+                            }
+                        }
+                        else {
+                            bool hasMongol = false; bool hasMenk = false;
+                            for (wchar_t c : wText) {
+                                if (c >= 0x1800 && c <= 0x18AF) hasMongol = true;
+                                else if (c >= 0xE000 && c <= 0xF8FF) hasMenk = true;
+                            }
+                            bool nearTime = !m_lyrics.empty() && fabs(m_lyrics.back().time - totalSeconds) < 1.5;
+                            // 【修改】上一行是空行且时间戳不同时，不合并，避免把空行"吃掉"
+                            if (nearTime && (!lastIsBlank || sameTime)) {
+                                if (hasMongol && m_lyrics.back().mongolText.empty()) m_lyrics.back().mongolText = wText;
+                                else if (hasMenk && m_lyrics.back().mongolMenkText.empty()) m_lyrics.back().mongolMenkText = wText;
+                                else if (!hasMongol && !hasMenk && m_lyrics.back().chineseText.empty()) m_lyrics.back().chineseText = wText;
                                 else { PanelLyricLine nl = { totalSeconds, L"", L"", L"" }; if (hasMongol) nl.mongolText = wText; else if (hasMenk) nl.mongolMenkText = wText; else nl.chineseText = wText; m_lyrics.push_back(nl); }
                             }
+                            else { PanelLyricLine nl = { totalSeconds, L"", L"", L"" }; if (hasMongol) nl.mongolText = wText; else if (hasMenk) nl.mongolMenkText = wText; else nl.chineseText = wText; m_lyrics.push_back(nl); }
                         }
                     }
                 }

@@ -29,7 +29,7 @@ extern const GUID guid_pref_desktop;
 
 DECLARE_COMPONENT_VERSION(
     "\xE8\x92\x99\xE5\x8F\xA4\xE6\x96\x87\xE6\xAD\x8C\xE8\xAF\x8D",
-    "1.3.0",
+    "1.3.1",
     "Author: lsfacg\n"
     "A Desktop Lyric plugin for Traditional Mongolian.\n"
     "Special thanks to the Wucai Hulunbuir Children's Choir.\n"
@@ -354,10 +354,31 @@ void ParseLyrics(const pfc::string8& lyrics) {
                     std::wstring wText = wideText.get_ptr();
 
                     size_t first = wText.find_first_not_of(L" ");
-                    if (first == std::wstring::npos) continue;
-                    size_t last = wText.find_last_not_of(L" ");
-                    wText = wText.substr(first, (last - first + 1));
-                    if (wText.empty()) continue;
+                    if (first != std::wstring::npos) {
+                        size_t last = wText.find_last_not_of(L" ");
+                        wText = wText.substr(first, (last - first + 1));
+                    }
+                    else {
+                        wText.clear();
+                    }
+
+                    // 【修改】判断上一行状态，用于正确合并 / 保留空行
+                    bool lastIsBlank = !g_Lyrics.empty()
+                        && g_Lyrics.back().mongolText.empty()
+                        && g_Lyrics.back().mongolMenkText.empty()
+                        && g_Lyrics.back().chineseText.empty();
+                    bool sameTime = !g_Lyrics.empty() && fabs(g_Lyrics.back().time - totalSeconds) < 0.05;
+
+                    if (wText.empty()) {
+                        // 【修改】带时间轴的空行：作为时间轴占位保留
+                        // 同一时间戳已有行则跳过，避免重复
+                        if (!sameTime) {
+                            LyricLine newLine;
+                            newLine.time = totalSeconds;
+                            g_Lyrics.push_back(newLine);
+                        }
+                        continue;
+                    }
 
                     bool hasMongol = false;
                     bool hasMenk = false;
@@ -366,7 +387,9 @@ void ParseLyrics(const pfc::string8& lyrics) {
                         else if (c >= 0xE000 && c <= 0xF8FF) hasMenk = true;
                     }
 
-                    if (!g_Lyrics.empty() && abs(g_Lyrics.back().time - totalSeconds) < 0.2) {
+                    bool nearTime = !g_Lyrics.empty() && fabs(g_Lyrics.back().time - totalSeconds) < 0.2;
+                    // 【修改】上一行是空行且时间戳不同时，不合并，避免把空行"吃掉"
+                    if (nearTime && (!lastIsBlank || sameTime)) {
                         if (hasMongol && g_Lyrics.back().mongolText.empty()) {
                             g_Lyrics.back().mongolText = wText;
                         }

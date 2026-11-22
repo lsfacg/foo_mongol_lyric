@@ -14,17 +14,16 @@
 #include <cmath>
 #include <map>
 #include <utility>
-
+#include <algorithm>
+#include <tuple>
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "comdlg32.lib")
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "uxtheme.lib")
-
 #define REG_PATH L"Software\\MongolLyricEditor"
-#define MAX_UNDO_STEPS 50
+#define MAX_UNDO_STEPS 200
 #define SLIDER_FIXED_WIDTH 300
 #define TIME_LABEL_WIDTH 130
-
 #define IDC_EDIT_LYRIC      1001
 #define IDC_BTN_PAUSE       1002
 #define IDC_BTN_INSERT      1003
@@ -39,7 +38,7 @@
 #define IDC_BTN_UNDO        1013
 #define IDC_BTN_REMOVE_CUR  1014
 #define IDC_BTN_REMOVE_ALL  1015
-
+#define IDM_FILE_OPEN       4000
 #define IDM_FILE_SAVE       4001
 #define IDM_FILE_EXIT       4002
 #define IDM_EDIT_DUAL       4004
@@ -52,18 +51,16 @@
 #define IDM_FONT_ZOOM_IN    4012
 #define IDM_FONT_ZOOM_OUT   4013
 #define IDM_EDIT_SHIFT_TIME 4014
-
+#define IDM_EDIT_MERGE_DUAL 4015
 #define IDC_FR_FIND_TEXT    2001
 #define IDC_FR_REPLACE_TEXT 2002
 #define IDC_FR_BTN_FIND     2003
 #define IDC_FR_BTN_REPLACE  2004
 #define IDC_FR_BTN_REPLACE_ALL 2005
 #define IDC_FR_BTN_CLOSE    2006
-
 #define IDC_ST_EDIT     3001
 #define IDC_ST_OK       3002
 #define IDC_ST_CANCEL   3003
-
 static HWND g_hEditorWnd = NULL;
 static HWND g_hEditBox = NULL;
 static HWND g_hChkDual = NULL;
@@ -80,16 +77,14 @@ static HWND g_hFrFindEdit = NULL;
 static HWND g_hFrReplaceEdit = NULL;
 static HWND g_hShiftTimeDlg = NULL;
 static HWND g_hStEdit = NULL;
-
 static fb2k::CCoreDarkModeHooks* g_pEditorHooks = nullptr;
 static fb2k::CCoreDarkModeHooks* g_pFrHooks = nullptr;
 static fb2k::CCoreDarkModeHooks* g_pShiftHooks = nullptr;
-
 static int g_editorFontSize = 26;
 static HFONT g_hCurrentFont = NULL;
 static HFONT g_hButtonFont = NULL;
 static LOGFONTW g_logFont = { 0 };
-static RECT g_windowRect = { 0, 0, 900, 850 };
+static RECT g_windowRect = { 0, 0, 720, 680 };
 static bool g_hasSavedPos = false;
 static HBRUSH g_hDarkBrush = NULL;
 static HBRUSH g_hLightBrush = NULL;
@@ -101,25 +96,89 @@ struct UndoState {
 };
 static std::vector<UndoState> g_undoStack;
 static std::vector<UndoState> g_redoStack;
-
 WNDPROC g_OldEditProc = NULL;
 WNDPROC g_OldSliderProc = NULL;
-
 inline bool IsDarkMode() {
     return (g_pEditorHooks != nullptr) && (bool)(*g_pEditorHooks);
 }
+static HBRUSH GetDarkBrush() {
+    if (!g_hDarkBrush) g_hDarkBrush = CreateSolidBrush(RGB(32, 32, 32));
+    return g_hDarkBrush;
+}
+static HBRUSH GetLightBrush() {
+    if (!g_hLightBrush) g_hLightBrush = (HBRUSH)(COLOR_WINDOW + 1);
+    return g_hLightBrush;
+}
 
-// ★★★ 前向声明（解决 C3861 找不到标识符的问题） ★★★
 std::wstring GetTrackDisplayTitle(metadb_handle_ptr item);
 std::wstring GetLrcPathFromPath(const std::wstring& audioPath);
 void TryCloseWindow();
+void ApplyNewFont();
+void OpenLrcFile();
+bool SmartSave();
+std::wstring GenerateDefaultLrcHeader(metadb_handle_ptr item);
+
+// 窗口位置"消毒"：窗口最小化时 GetWindowRect 会给出 -32000 之类的屏幕外坐标，
+// 最大化/全屏时会给出比屏幕还大的整屏尺寸。这类值一旦存进注册表，下次
+// CreateWindowExW 就会把窗口建到屏幕外，表现为"第二次打开窗口不见了"。
+// 这里在读取后、创建前统一校正：不合法就回退到主显示器工作区居中。
+static void SanitizeWindowRect() {
+    const int MIN_W = 600, MIN_H = 500;
+    const int DEFAULT_W = 720, DEFAULT_H = 680;
+
+    int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    if (vw <= 0 || vh <= 0) {
+        vx = 0; vy = 0;
+        vw = GetSystemMetrics(SM_CXSCREEN);
+        vh = GetSystemMetrics(SM_CYSCREEN);
+    }
+    if (vw <= 0) vw = 1920;
+    if (vh <= 0) vh = 1080;
+
+    int w = g_windowRect.right - g_windowRect.left;
+    int h = g_windowRect.bottom - g_windowRect.top;
+    // 尺寸异常（含"恰好一整屏"的真全屏）单独标记：这类一律回到默认大小，
+    // 否则窗口仍会铺满屏幕、看不见标题栏和边框。
+    bool badSize = w < MIN_W || w > vw
+        || h < MIN_H || h > vh
+        || (w >= vw && h >= vh);
+    bool badPos = g_windowRect.right <= vx + 100
+        || g_windowRect.left >= vx + vw - 100
+        || g_windowRect.bottom <= vy + 100
+        || g_windowRect.top >= vy + vh - 100;
+    bool bad = !g_hasSavedPos || badSize || badPos;
+    if (!bad) { g_hasSavedPos = true; return; }
+
+    if (badSize) { w = DEFAULT_W; h = DEFAULT_H; }
+    RECT wa; int x, y;
+    if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0)) {
+        int availW = wa.right - wa.left, availH = wa.bottom - wa.top;
+        if (availW > 0 && w > availW) w = availW;
+        if (availH > 0 && h > availH) h = availH;
+        x = wa.left + (availW - w) / 2;
+        y = wa.top + (availH - h) / 2;
+        if (x < wa.left) x = wa.left;
+        if (y < wa.top) y = wa.top;
+    }
+    else {
+        if (w > vw) w = vw;
+        if (h > vh) h = vh;
+        x = vx + (vw - w) / 2;
+        y = vy + (vh - h) / 2;
+    }
+    g_windowRect.left = x; g_windowRect.top = y;
+    g_windowRect.right = x + w; g_windowRect.bottom = y + h;
+    g_hasSavedPos = true;
+}
 
 void SaveSettings() {
     HKEY hKey;
     if (RegCreateKeyExW(HKEY_CURRENT_USER, REG_PATH, 0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
         RegSetValueExW(hKey, L"FontSize", 0, REG_DWORD, (BYTE*)&g_editorFontSize, sizeof(g_editorFontSize));
         RegSetValueExW(hKey, L"LogFontData", 0, REG_BINARY, (const BYTE*)&g_logFont, sizeof(LOGFONTW));
-
         RegSetValueExW(hKey, L"WinLeft", 0, REG_DWORD, (BYTE*)&g_windowRect.left, sizeof(LONG));
         RegSetValueExW(hKey, L"WinTop", 0, REG_DWORD, (BYTE*)&g_windowRect.top, sizeof(LONG));
         RegSetValueExW(hKey, L"WinRight", 0, REG_DWORD, (BYTE*)&g_windowRect.right, sizeof(LONG));
@@ -127,13 +186,11 @@ void SaveSettings() {
         RegCloseKey(hKey);
     }
 }
-
 void LoadSettings() {
     HKEY hKey; g_hasSavedPos = false;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, REG_PATH, 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
         DWORD size = sizeof(g_editorFontSize);
         RegQueryValueExW(hKey, L"FontSize", 0, NULL, (BYTE*)&g_editorFontSize, &size);
-
         size = sizeof(LOGFONTW);
         if (RegQueryValueExW(hKey, L"LogFontData", 0, NULL, (BYTE*)&g_logFont, &size) != ERROR_SUCCESS) {
             memset(&g_logFont, 0, sizeof(LOGFONTW));
@@ -142,13 +199,11 @@ void LoadSettings() {
             g_logFont.lfCharSet = DEFAULT_CHARSET;
             wcscpy_s(g_logFont.lfFaceName, L"Microsoft YaHei");
         }
-
         size = sizeof(LONG);
         RegQueryValueExW(hKey, L"WinLeft", 0, NULL, (BYTE*)&g_windowRect.left, &size);
         RegQueryValueExW(hKey, L"WinTop", 0, NULL, (BYTE*)&g_windowRect.top, &size);
         RegQueryValueExW(hKey, L"WinRight", 0, NULL, (BYTE*)&g_windowRect.right, &size);
         RegQueryValueExW(hKey, L"WinBottom", 0, NULL, (BYTE*)&g_windowRect.bottom, &size);
-
         g_hasSavedPos = true;
         RegCloseKey(hKey);
     }
@@ -159,32 +214,36 @@ void LoadSettings() {
         g_logFont.lfCharSet = DEFAULT_CHARSET;
         wcscpy_s(g_logFont.lfFaceName, L"Microsoft YaHei");
     }
+    // 无论是否读到注册表，都保证 g_windowRect 是能看见的合法矩形
+    SanitizeWindowRect();
 }
-
 std::wstring FormatTime(double seconds) {
     if (seconds < 0) seconds = 0;
     int totalSec = (int)seconds; int min = totalSec / 60; int sec = totalSec % 60;
     int ms = (int)((seconds - totalSec) * 100);
     wchar_t buf[20]; swprintf_s(buf, L"%02d:%02d.%02d", min, sec, ms); return std::wstring(buf);
 }
-
 double GetCurrentPlaybackTime() { double t = playback_control::get()->playback_get_position(); return t < 0 ? 0 : t; }
 double GetTrackLength() { double len = 0; metadb_handle_ptr item; if (playback_control::get()->get_now_playing(item)) len = item->get_length(); return len < 0 ? 0 : len; }
-
 std::wstring GetLineText(int lineIndex) {
-    int lineLen = (int)SendMessage(g_hEditBox, EM_LINELENGTH, (WPARAM)lineIndex, 0);
-    if (lineLen == 0) return L"";
-    std::vector<wchar_t> buffer(lineLen + 2); buffer[0] = (wchar_t)lineLen; buffer[1] = 0;
-    SendMessage(g_hEditBox, EM_GETLINE, (WPARAM)lineIndex, (LPARAM)buffer.data());
-    return std::wstring(buffer.data(), lineLen);
+    if (!g_hEditBox || lineIndex < 0) return L"";
+    // EM_LINELENGTH 的 wParam 是"字符索引"，不是行号：
+    // 必须先用 EM_LINEINDEX 把行号换成该行首字符的索引，再查该行长度。
+    int lineStart = (int)SendMessage(g_hEditBox, EM_LINEINDEX, (WPARAM)lineIndex, 0);
+    if (lineStart < 0) return L"";
+    int lineLen = (int)SendMessage(g_hEditBox, EM_LINELENGTH, (WPARAM)lineStart, 0);
+    if (lineLen <= 0) return L"";
+    std::vector<wchar_t> buffer((size_t)lineLen + 2, L'\0');
+    buffer[0] = (wchar_t)lineLen;
+    int copied = (int)SendMessage(g_hEditBox, EM_GETLINE, (WPARAM)lineIndex, (LPARAM)buffer.data());
+    if (copied <= 0) return L"";
+    return std::wstring(buffer.data(), copied);
 }
-
 int GetCurrentLineIndex() {
     DWORD sel = (DWORD)SendMessage(g_hEditBox, EM_GETSEL, 0, 0);
     int caret = HIWORD(sel);
     return (int)SendMessage(g_hEditBox, EM_LINEFROMCHAR, caret, 0);
 }
-
 double ParseTimestamp(const std::wstring& timeStr) {
     int min = 0, sec = 0, ms = 0;
     if (swscanf_s(timeStr.c_str(), L"%d:%d.%d", &min, &sec, &ms) >= 2) {
@@ -195,6 +254,32 @@ double ParseTimestamp(const std::wstring& timeStr) {
     return -1.0;
 }
 
+// 判断 tag 是否是纯时间戳（形如 00:15 / 00:15.0 / 00:15.00 / 00:15.000）
+// 返回 true 才认为是时间轴，元数据如 ti:/ar:/al:/by: 一律返回 false
+static bool IsTimestampString(const std::wstring& tag) {
+    if (tag.empty()) return false;
+    size_t i = 0;
+    // 分钟
+    size_t d1 = 0;
+    while (i < tag.length() && iswdigit(tag[i])) { i++; d1++; }
+    if (d1 == 0) return false;
+    // 冒号
+    if (i >= tag.length() || tag[i] != L':') return false;
+    i++;
+    // 秒
+    size_t d2 = 0;
+    while (i < tag.length() && iswdigit(tag[i])) { i++; d2++; }
+    if (d2 == 0) return false;
+    // 可选毫秒
+    if (i < tag.length() && tag[i] == L'.') {
+        i++;
+        size_t d3 = 0;
+        while (i < tag.length() && iswdigit(tag[i])) { i++; d3++; }
+        if (d3 == 0) return false;
+    }
+    return i == tag.length();
+}
+
 void UpdateProgressDisplay() {
     if (!g_hSliderProgress || !g_hLblTime) return;
     if (g_isSliderDragging) return;
@@ -203,34 +288,42 @@ void UpdateProgressDisplay() {
     else SendMessage(g_hSliderProgress, TBM_SETPOS, TRUE, 0);
     SetWindowTextW(g_hLblTime, (FormatTime(currentTime) + L" / " + FormatTime(trackLength)).c_str());
 }
-
-void SetEditTextNoFlicker(const std::wstring& text, int caretPos = -1, int firstVisibleLine = -1) {
+void SetEditText(const std::wstring& text, int caretPos = -1, int firstVisibleLine = -1) {
     if (!g_hEditBox) return;
-    SendMessage(g_hEditBox, WM_SETREDRAW, FALSE, 0);
-    SendMessage(g_hEditBox, EM_SETSEL, 0, -1);
-    SendMessage(g_hEditBox, EM_REPLACESEL, FALSE, (LPARAM)text.c_str());
-    if (caretPos >= 0) { if (caretPos > (int)text.length()) caretPos = (int)text.length(); SendMessage(g_hEditBox, EM_SETSEL, caretPos, caretPos); }
-    SendMessage(g_hEditBox, WM_SETREDRAW, TRUE, 0);
-    InvalidateRect(g_hEditBox, NULL, FALSE);
+    SetWindowTextW(g_hEditBox, text.c_str());
+    if (caretPos >= 0) {
+        if (caretPos > (int)text.length()) caretPos = (int)text.length();
+        SendMessage(g_hEditBox, EM_SETSEL, caretPos, caretPos);
+    }
+    InvalidateRect(g_hEditBox, NULL, TRUE);
     UpdateWindow(g_hEditBox);
-    if (firstVisibleLine >= 0) { int curFirst = (int)SendMessage(g_hEditBox, EM_GETFIRSTVISIBLELINE, 0, 0); SendMessage(g_hEditBox, EM_LINESCROLL, 0, firstVisibleLine - curFirst); }
+    if (firstVisibleLine >= 0) {
+        int curFirst = (int)SendMessage(g_hEditBox, EM_GETFIRSTVISIBLELINE, 0, 0);
+        SendMessage(g_hEditBox, EM_LINESCROLL, 0, firstVisibleLine - curFirst);
+    }
 }
-
 std::wstring GetFullText() {
-    if (!g_hEditBox) return L""; // ★★★ 修复 C6387 警告 ★★★
+    if (!g_hEditBox) return L"";
     int len = GetWindowTextLengthW(g_hEditBox);
-    std::wstring text(len + 1, L'\0'); GetWindowTextW(g_hEditBox, &text[0], len + 1); text.resize(len); return text;
+    std::wstring text(len + 1, L'\0');
+    GetWindowTextW(g_hEditBox, &text[0], len + 1);
+    text.resize(len);
+    return text;
 }
-
 void PushUndoState() {
-    UndoState state; state.text = GetFullText();
-    DWORD sel = (DWORD)SendMessage(g_hEditBox, EM_GETSEL, 0, 0); state.caretPos = HIWORD(sel);
+    std::wstring currentText = GetFullText();
+    if (!g_undoStack.empty() && g_undoStack.back().text == currentText) {
+        return;
+    }
+    UndoState state;
+    state.text = currentText;
+    DWORD sel = (DWORD)SendMessage(g_hEditBox, EM_GETSEL, 0, 0);
+    state.caretPos = HIWORD(sel);
     state.firstVisibleLine = (int)SendMessage(g_hEditBox, EM_GETFIRSTVISIBLELINE, 0, 0);
     g_undoStack.push_back(state);
     if (g_undoStack.size() > MAX_UNDO_STEPS) g_undoStack.erase(g_undoStack.begin());
     g_redoStack.clear();
 }
-
 void DoUndo() {
     if (g_undoStack.empty()) return;
     UndoState cur; cur.text = GetFullText();
@@ -238,9 +331,8 @@ void DoUndo() {
     cur.firstVisibleLine = (int)SendMessage(g_hEditBox, EM_GETFIRSTVISIBLELINE, 0, 0);
     g_redoStack.push_back(cur);
     UndoState prev = g_undoStack.back(); g_undoStack.pop_back();
-    SetEditTextNoFlicker(prev.text, prev.caretPos, prev.firstVisibleLine);
+    SetEditText(prev.text, prev.caretPos, prev.firstVisibleLine);
 }
-
 void DoRedo() {
     if (g_redoStack.empty()) return;
     UndoState cur; cur.text = GetFullText();
@@ -248,9 +340,8 @@ void DoRedo() {
     cur.firstVisibleLine = (int)SendMessage(g_hEditBox, EM_GETFIRSTVISIBLELINE, 0, 0);
     g_undoStack.push_back(cur);
     UndoState next = g_redoStack.back(); g_redoStack.pop_back();
-    SetEditTextNoFlicker(next.text, next.caretPos, next.firstVisibleLine);
+    SetEditText(next.text, next.caretPos, next.firstVisibleLine);
 }
-
 void GotoCurrentLine() {
     int curLine = GetCurrentLineIndex(); std::wstring lineText = GetLineText(curLine);
     size_t start = lineText.find(L'['); size_t end = lineText.find(L']');
@@ -259,12 +350,10 @@ void GotoCurrentLine() {
         double time = ParseTimestamp(timeStr); if (time >= 0) playback_control::get()->playback_seek(time);
     }
 }
-
 void ScrollToMakeVisible(int lineIndex) {
     if (!g_hEditBox || lineIndex < 0) return;
     RECT rc; SendMessage(g_hEditBox, EM_GETRECT, 0, (LPARAM)&rc);
     int bottomY = rc.bottom;
-
     int firstVisible = (int)SendMessage(g_hEditBox, EM_GETFIRSTVISIBLELINE, 0, 0);
     int charIdx1 = (int)SendMessage(g_hEditBox, EM_LINEINDEX, firstVisible, 0);
     int charIdx2 = (int)SendMessage(g_hEditBox, EM_LINEINDEX, firstVisible + 1, 0);
@@ -276,15 +365,12 @@ void ScrollToMakeVisible(int lineIndex) {
         if (y2 > y1) lineHeight = y2 - y1;
     }
     if (lineHeight <= 0) lineHeight = 20;
-
     int charIdx = (int)SendMessage(g_hEditBox, EM_LINEINDEX, lineIndex, 0);
     if (charIdx < 0) return;
     LPARAM pos = SendMessage(g_hEditBox, EM_POSFROMCHAR, charIdx, 0);
     int lineY = HIWORD(pos);
-
     int spaceBelow = bottomY - (lineY + lineHeight);
     int linesBelow = spaceBelow / lineHeight;
-
     if (linesBelow < 4) {
         int scrollLines = 4 - linesBelow;
         SendMessage(g_hEditBox, EM_LINESCROLL, 0, scrollLines);
@@ -293,12 +379,10 @@ void ScrollToMakeVisible(int lineIndex) {
         SendMessage(g_hEditBox, EM_LINESCROLL, 0, -(firstVisible - lineIndex));
     }
 }
-
 void ScrollToRevealTop(int lineIndex) {
     if (!g_hEditBox || lineIndex < 0) return;
     RECT rc; SendMessage(g_hEditBox, EM_GETRECT, 0, (LPARAM)&rc);
     int topY = rc.top;
-
     int firstVisible = (int)SendMessage(g_hEditBox, EM_GETFIRSTVISIBLELINE, 0, 0);
     int charIdx1 = (int)SendMessage(g_hEditBox, EM_LINEINDEX, firstVisible, 0);
     int charIdx2 = (int)SendMessage(g_hEditBox, EM_LINEINDEX, firstVisible + 1, 0);
@@ -310,15 +394,12 @@ void ScrollToRevealTop(int lineIndex) {
         if (y2 > y1) lineHeight = y2 - y1;
     }
     if (lineHeight <= 0) lineHeight = 20;
-
     int charIdx = (int)SendMessage(g_hEditBox, EM_LINEINDEX, lineIndex, 0);
     if (charIdx < 0) return;
     LPARAM pos = SendMessage(g_hEditBox, EM_POSFROMCHAR, charIdx, 0);
     int lineY = HIWORD(pos);
-
     int spaceAbove = lineY - topY;
     int linesAbove = spaceAbove / lineHeight;
-
     if (linesAbove < 4) {
         int scrollLines = -(4 - linesAbove);
         SendMessage(g_hEditBox, EM_LINESCROLL, 0, scrollLines);
@@ -329,18 +410,22 @@ void ScrollToRevealTop(int lineIndex) {
         SendMessage(g_hEditBox, EM_LINESCROLL, 0, targetFirst - firstVisible);
     }
 }
-
 void CustomRedo() {
     int curLine = GetCurrentLineIndex();
     int totalLines = (int)SendMessage(g_hEditBox, EM_GETLINECOUNT, 0, 0);
+
     auto GetLineTime = [&](int lineIdx) -> std::wstring {
         if (lineIdx < 0 || lineIdx >= totalLines) return L"";
         std::wstring line = GetLineText(lineIdx);
-        size_t bpos = line.find(L'['); size_t epos = line.find(L']');
-        if (bpos != std::wstring::npos && bpos < 10 && epos != std::wstring::npos && epos > bpos)
-            return line.substr(bpos + 1, epos - bpos - 1);
+        size_t bpos = line.find(L'[');
+        size_t epos = line.find(L']');
+        if (bpos != std::wstring::npos && bpos < 10 && epos != std::wstring::npos && epos > bpos) {
+            std::wstring tag = line.substr(bpos + 1, epos - bpos - 1);
+            if (IsTimestampString(tag)) return tag;
+        }
         return L"";
         };
+
     std::wstring curTime = GetLineTime(curLine);
     if (curTime.empty()) {
         int target = curLine - 1;
@@ -349,53 +434,83 @@ void CustomRedo() {
         curTime = GetLineTime(target);
         curLine = target;
     }
+
     int groupStart = curLine;
     int groupEnd = curLine;
     if (g_isDualMode) {
         while (groupStart > 0 && GetLineTime(groupStart - 1) == curTime) groupStart--;
         while (groupEnd < totalLines - 1 && GetLineTime(groupEnd + 1) == curTime) groupEnd++;
     }
+
     int seekLine = groupStart - 1;
     while (seekLine >= 0 && GetLineTime(seekLine).empty()) seekLine--;
     std::wstring seekTime = (seekLine >= 0) ? GetLineTime(seekLine) : L"";
+
     PushUndoState();
     g_isModified = true;
+
     for (int i = groupEnd; i >= groupStart; i--) {
         int lineStartChar = (int)SendMessage(g_hEditBox, EM_LINEINDEX, i, 0);
         std::wstring lineContent = GetLineText(i);
-        size_t bpos = lineContent.find(L'['); size_t epos = lineContent.find(L']');
-        if (bpos != std::wstring::npos && bpos < 10 && epos != std::wstring::npos && epos > bpos) {
-            SendMessage(g_hEditBox, EM_SETSEL, lineStartChar + bpos, lineStartChar + epos + 1);
+
+        // 【修改】收集这一行所有合法时间戳的位置
+        std::vector<std::pair<size_t, size_t>> stampRanges;
+        size_t searchPos = 0;
+        while (true) {
+            size_t bpos = lineContent.find(L'[', searchPos);
+            if (bpos == std::wstring::npos) break;
+            size_t epos = lineContent.find(L']', bpos);
+            if (epos == std::wstring::npos) break;
+
+            std::wstring tag = lineContent.substr(bpos + 1, epos - bpos - 1);
+            if (IsTimestampString(tag)) {
+                stampRanges.push_back({ bpos, epos });
+            }
+            searchPos = epos + 1;
+        }
+
+        // 从后往前删，保证前面的字符索引不受影响
+        for (int k = (int)stampRanges.size() - 1; k >= 0; k--) {
+            size_t sb = stampRanges[k].first;
+            size_t se = stampRanges[k].second;
+            SendMessage(g_hEditBox, EM_SETSEL, lineStartChar + sb, lineStartChar + se + 1);
             SendMessage(g_hEditBox, EM_REPLACESEL, FALSE, (LPARAM)L"");
         }
     }
+
     if (!seekTime.empty()) {
         double t = ParseTimestamp(seekTime);
         if (t >= 0) playback_control::get()->playback_seek(t);
     }
+
     ScrollToRevealTop(groupStart);
     if (GetForegroundWindow() == g_hEditorWnd) SetFocus(g_hEditBox);
 }
-
 void RemoveCurrentTimestamp() {
     int curLine = GetCurrentLineIndex(); std::wstring text = GetFullText();
     int lineStartChar = (int)SendMessage(g_hEditBox, EM_LINEINDEX, curLine, 0);
-    int lineLen = (int)SendMessage(g_hEditBox, EM_LINELENGTH, (WPARAM)curLine, 0);
+    int lineLen = (lineStartChar >= 0)
+        ? (int)SendMessage(g_hEditBox, EM_LINELENGTH, (WPARAM)lineStartChar, 0)
+        : 0;
     DWORD sel = (DWORD)SendMessage(g_hEditBox, EM_GETSEL, 0, 0); int oldCaret = HIWORD(sel);
     int firstVisible = (int)SendMessage(g_hEditBox, EM_GETFIRSTVISIBLELINE, 0, 0);
     if (lineStartChar >= 0 && lineLen > 0) {
         std::wstring lineText = text.substr(lineStartChar, lineLen);
         size_t bpos = lineText.find(L'['); size_t end = lineText.find(L']');
-        if (bpos != std::wstring::npos && bpos < 10 && end != std::wstring::npos) {
-            PushUndoState(); int delLen = (int)(end - bpos + 1); text.erase(lineStartChar + bpos, delLen);
-            int newCaret = oldCaret; if (oldCaret > lineStartChar + (int)bpos) { newCaret -= delLen; if (newCaret < lineStartChar + (int)bpos) newCaret = lineStartChar + (int)bpos; }
-            SetEditTextNoFlicker(text, newCaret, firstVisible);
-            g_isModified = true;
-            ScrollToMakeVisible(curLine);
+        if (bpos != std::wstring::npos && bpos < 10 && end != std::wstring::npos && end > bpos) {
+            std::wstring tag = lineText.substr(bpos + 1, end - bpos - 1);
+            // 【修改】严格判定：只认纯时间戳，元数据 [ti:]/[ar:]/[al:]/[by:] 不会命中
+            bool isTimestamp = IsTimestampString(tag);
+            if (isTimestamp) {
+                PushUndoState(); int delLen = (int)(end - bpos + 1); text.erase(lineStartChar + bpos, delLen);
+                int newCaret = oldCaret; if (oldCaret > lineStartChar + (int)bpos) { newCaret -= delLen; if (newCaret < lineStartChar + (int)bpos) newCaret = lineStartChar + (int)bpos; }
+                SetEditText(text, newCaret, firstVisible);
+                g_isModified = true;
+                ScrollToMakeVisible(curLine);
+            }
         }
     }
 }
-
 void InsertCurrentTime() {
     if (!g_hEditBox || !playback_control::get()->is_playing()) return;
     double pos = playback_control::get()->playback_get_position(); if (pos < 0) pos = 0;
@@ -405,13 +520,13 @@ void InsertCurrentTime() {
     int curLine = GetCurrentLineIndex();
     PushUndoState();
     g_isModified = true;
-
     auto ApplyToLine = [&](int lineIdx) {
         int startChar = (int)SendMessage(g_hEditBox, EM_LINEINDEX, lineIdx, 0);
         if (startChar < 0) return;
         std::wstring lt = GetLineText(lineIdx);
         size_t bp = lt.find(L'['); size_t ep = lt.find(L']');
-        if (bp != std::wstring::npos && ep != std::wstring::npos && ep > bp && (ep - bp) < 15) {
+        if (bp != std::wstring::npos && ep != std::wstring::npos && ep > bp
+            && IsTimestampString(lt.substr(bp + 1, ep - bp - 1))) {
             SendMessage(g_hEditBox, EM_SETSEL, startChar + (int)bp, startChar + (int)ep + 1);
             SendMessage(g_hEditBox, EM_REPLACESEL, FALSE, (LPARAM)ts.c_str());
         }
@@ -420,42 +535,73 @@ void InsertCurrentTime() {
             SendMessage(g_hEditBox, EM_REPLACESEL, FALSE, (LPARAM)ts.c_str());
         }
         };
-
     if (g_isDualMode) ApplyToLine(curLine + 1);
     ApplyToLine(curLine);
-
     int caretLine = curLine + (g_isDualMode ? 2 : 1);
     int caretPos = (int)SendMessage(g_hEditBox, EM_LINEINDEX, caretLine, 0);
     if (caretPos < 0) caretPos = GetWindowTextLengthW(g_hEditBox);
     SendMessage(g_hEditBox, EM_SETSEL, caretPos, caretPos);
-
     ScrollToMakeVisible(caretLine);
     if (GetForegroundWindow() == g_hEditorWnd) SetFocus(g_hEditBox);
 }
-
 void RemoveAllTimestamps() {
     std::wstring text = GetFullText(); std::wstring originalText = text;
     DWORD sel = (DWORD)SendMessage(g_hEditBox, EM_GETSEL, 0, 0); int oldCaret = HIWORD(sel);
     int firstVisible = (int)SendMessage(g_hEditBox, EM_GETFIRSTVISIBLELINE, 0, 0);
     int deletedBeforeCaret = 0; size_t searchStart = 0;
+
+    // 统计光标前被删掉的时间戳长度
     while (searchStart < (size_t)oldCaret && searchStart < originalText.size()) {
         size_t bpos = originalText.find(L'[', searchStart); if (bpos == std::wstring::npos || bpos >= (size_t)oldCaret) break;
         size_t epos = originalText.find(L']', bpos);
-        if (epos != std::wstring::npos) { size_t lineStart = originalText.rfind(L'\n', bpos); lineStart = (lineStart == std::wstring::npos) ? 0 : lineStart + 1; if (bpos - lineStart < 10) deletedBeforeCaret += (int)(epos - bpos + 1); }
+        if (epos != std::wstring::npos) {
+            size_t lineStart = originalText.rfind(L'\n', bpos); lineStart = (lineStart == std::wstring::npos) ? 0 : lineStart + 1;
+            if (bpos - lineStart < 10) {
+                std::wstring tag = originalText.substr(bpos + 1, epos - bpos - 1);
+                if (IsTimestampString(tag)) deletedBeforeCaret += (int)(epos - bpos + 1);
+            }
+        }
         searchStart = bpos + 1;
     }
+
     std::wstring result; size_t start = 0;
     while (start <= text.size()) {
         size_t nl = text.find(L'\n', start);
         std::wstring line = (nl == std::wstring::npos) ? text.substr(start) : text.substr(start, nl - start);
         if (!line.empty() && line.back() == L'\r') line.pop_back();
-        size_t bpos = line.find(L'[');
-        if (bpos != std::wstring::npos && bpos < 10) { size_t epos = line.find(L']', bpos); if (epos != std::wstring::npos) { line = line.substr(epos + 1); size_t fs = line.find_first_not_of(L" \t"); if (fs != std::wstring::npos) line = line.substr(fs); else line.clear(); } }
+
+        // 【修改】循环清理该行开头的所有时间戳，直到不再有合法时间戳
+        while (true) {
+            size_t bpos = line.find(L'[');
+            if (bpos != std::wstring::npos && bpos < 10) {
+                size_t epos = line.find(L']', bpos);
+                if (epos != std::wstring::npos && epos > bpos) {
+                    std::wstring tag = line.substr(bpos + 1, epos - bpos - 1);
+                    if (IsTimestampString(tag)) {
+                        line = line.substr(epos + 1);
+                        size_t fs = line.find_first_not_of(L" \t");
+                        if (fs != std::wstring::npos) line = line.substr(fs);
+                        else line.clear();
+                        continue; // 继续查找是否有第二个时间戳
+                    }
+                }
+            }
+            break;
+        }
+
         result += line; if (nl == std::wstring::npos) break; result += L"\r\n"; start = nl + 1;
     }
     PushUndoState(); int newCaret = oldCaret - deletedBeforeCaret; if (newCaret < 0) newCaret = 0;
-    SetEditTextNoFlicker(result, newCaret, firstVisible);
+    SetEditText(result, newCaret, firstVisible);
     g_isModified = true;
+}
+// 只认"行首 [纯时间戳]"的歌词行；[ti:]/[ar:]/[al:]/[by:] 等元数据行返回 false
+static bool IsLyricTimestampLine(const std::wstring& line) {
+    size_t bpos = line.find(L'[');
+    if (bpos == std::wstring::npos || bpos >= 10) return false;
+    size_t epos = line.find(L']', bpos);
+    if (epos == std::wstring::npos || epos <= bpos) return false;
+    return IsTimestampString(line.substr(bpos + 1, epos - bpos - 1));
 }
 
 void RemoveOriginalLyrics() {
@@ -463,83 +609,82 @@ void RemoveOriginalLyrics() {
     while (start <= text.size()) { size_t nl = text.find(L'\n', start); std::wstring line = (nl == std::wstring::npos) ? text.substr(start) : text.substr(start, nl - start); if (!line.empty() && line.back() == L'\r') line.pop_back(); lines.push_back(line); if (nl == std::wstring::npos) break; start = nl + 1; }
     std::wstring result;
     for (size_t i = 0; i < lines.size(); i++) {
+        // ★ 元数据行/普通文本行/空行一律原样保留：
+        //   既不参与双语配对，也绝不再因"标签后无内容"被丢弃。
+        if (!IsLyricTimestampLine(lines[i])) {
+            result += lines[i]; if (i + 1 < lines.size()) result += L"\r\n";
+            continue;
+        }
+
         size_t bpos = lines[i].find(L'[');
-        if (bpos != std::wstring::npos && bpos < 10) {
-            size_t epos = lines[i].find(L']', bpos);
-            if (epos != std::wstring::npos) {
-                std::wstring timeStr = lines[i].substr(bpos + 1, epos - bpos - 1);
-                if (i + 1 < lines.size()) {
-                    size_t bpos2 = lines[i + 1].find(L'['); size_t epos2 = lines[i + 1].find(L']', bpos2);
-                    if (bpos2 != std::wstring::npos && bpos2 < 10 && epos2 != std::wstring::npos) {
-                        std::wstring timeStr2 = lines[i + 1].substr(bpos2 + 1, epos2 - bpos2 - 1);
-                        if (timeStr == timeStr2) { std::wstring content2 = lines[i + 1].substr(epos2 + 1); if (content2.find_first_not_of(L" \t") != std::wstring::npos) { result += lines[i + 1]; if (i + 2 < lines.size()) result += L"\r\n"; i++; continue; } }
-                    }
+        size_t epos = lines[i].find(L']', bpos);
+        std::wstring timeStr = lines[i].substr(bpos + 1, epos - bpos - 1);
+
+        // 下一行必须同样是合法时间轴行才做双语配对，避免把元数据行当翻译行
+        if (i + 1 < lines.size() && IsLyricTimestampLine(lines[i + 1])) {
+            size_t bpos2 = lines[i + 1].find(L'['); size_t epos2 = lines[i + 1].find(L']', bpos2);
+            std::wstring timeStr2 = lines[i + 1].substr(bpos2 + 1, epos2 - bpos2 - 1);
+            if (timeStr == timeStr2) {
+                std::wstring content2 = lines[i + 1].substr(epos2 + 1);
+                if (content2.find_first_not_of(L" \t") != std::wstring::npos) {
+                    result += lines[i + 1]; if (i + 2 < lines.size()) result += L"\r\n"; i++; continue;
                 }
             }
         }
-        size_t eposCheck = lines[i].find(L']'); std::wstring contentCheck = (eposCheck != std::wstring::npos) ? lines[i].substr(eposCheck + 1) : lines[i];
-        if (contentCheck.find_first_not_of(L" \t") == std::wstring::npos && bpos != std::wstring::npos) continue;
+
+        // 只丢弃"没有歌词内容的空时间轴行"
+        std::wstring content = lines[i].substr(epos + 1);
+        if (content.find_first_not_of(L" \t") == std::wstring::npos) continue;
         result += lines[i]; if (i + 1 < lines.size()) result += L"\r\n";
     }
-    PushUndoState(); SetEditTextNoFlicker(result);
+    PushUndoState(); SetEditText(result);
     g_isModified = true;
 }
-
 void RemoveTranslationLyrics() {
     std::wstring text = GetFullText(); std::vector<std::wstring> lines; size_t start = 0;
     while (start <= text.size()) { size_t nl = text.find(L'\n', start); std::wstring line = (nl == std::wstring::npos) ? text.substr(start) : text.substr(start, nl - start); if (!line.empty() && line.back() == L'\r') line.pop_back(); lines.push_back(line); if (nl == std::wstring::npos) break; start = nl + 1; }
     std::wstring result;
     for (size_t i = 0; i < lines.size(); i++) {
+        // ★ 同 RemoveOriginalLyrics：元数据行/普通文本行/空行一律原样保留
+        if (!IsLyricTimestampLine(lines[i])) {
+            result += lines[i]; if (i + 1 < lines.size()) result += L"\r\n";
+            continue;
+        }
+
         size_t bpos = lines[i].find(L'[');
-        if (bpos != std::wstring::npos && bpos < 10) {
-            size_t epos = lines[i].find(L']', bpos);
-            if (epos != std::wstring::npos) {
-                std::wstring timeStr = lines[i].substr(bpos + 1, epos - bpos - 1);
-                if (i + 1 < lines.size()) {
-                    size_t bpos2 = lines[i + 1].find(L'['); size_t epos2 = lines[i + 1].find(L']', bpos2);
-                    if (bpos2 != std::wstring::npos && bpos2 < 10 && epos2 != std::wstring::npos) {
-                        std::wstring timeStr2 = lines[i + 1].substr(bpos2 + 1, epos2 - bpos2 - 1);
-                        if (timeStr == timeStr2) { std::wstring content2 = lines[i + 1].substr(epos2 + 1); if (content2.find_first_not_of(L" \t") != std::wstring::npos) { result += lines[i]; if (i + 2 < lines.size()) result += L"\r\n"; i++; continue; } }
-                    }
+        size_t epos = lines[i].find(L']', bpos);
+        std::wstring timeStr = lines[i].substr(bpos + 1, epos - bpos - 1);
+
+        if (i + 1 < lines.size() && IsLyricTimestampLine(lines[i + 1])) {
+            size_t bpos2 = lines[i + 1].find(L'['); size_t epos2 = lines[i + 1].find(L']', bpos2);
+            std::wstring timeStr2 = lines[i + 1].substr(bpos2 + 1, epos2 - bpos2 - 1);
+            if (timeStr == timeStr2) {
+                std::wstring content2 = lines[i + 1].substr(epos2 + 1);
+                if (content2.find_first_not_of(L" \t") != std::wstring::npos) {
+                    result += lines[i]; if (i + 2 < lines.size()) result += L"\r\n"; i++; continue;
                 }
             }
         }
-        size_t eposCheck = lines[i].find(L']'); std::wstring contentCheck = (eposCheck != std::wstring::npos) ? lines[i].substr(eposCheck + 1) : lines[i];
-        if (contentCheck.find_first_not_of(L" \t") == std::wstring::npos && bpos != std::wstring::npos) continue;
+
+        std::wstring content = lines[i].substr(epos + 1);
+        if (content.find_first_not_of(L" \t") == std::wstring::npos) continue;
         result += lines[i]; if (i + 1 < lines.size()) result += L"\r\n";
     }
-    PushUndoState(); SetEditTextNoFlicker(result);
+    PushUndoState(); SetEditText(result);
     g_isModified = true;
 }
-
 void ApplyNewFont() {
     if (!g_hEditBox) return;
-
-    CHARFORMAT2W cf;
-    ZeroMemory(&cf, sizeof(cf));
-    cf.cbSize = sizeof(CHARFORMAT2W);
-    cf.dwMask = CFM_FACE | CFM_SIZE | CFM_BOLD | CFM_COLOR;
-
-    wcscpy_s(cf.szFaceName, g_logFont.lfFaceName[0] ? g_logFont.lfFaceName : L"Microsoft YaHei");
-    cf.yHeight = g_editorFontSize * 15;
-    if (g_logFont.lfWeight >= FW_BOLD) cf.dwEffects |= CFE_BOLD;
-
-    cf.crTextColor = IsDarkMode() ? RGB(240, 240, 240) : RGB(0, 0, 0);
-    cf.dwEffects &= ~CFE_AUTOCOLOR;
-
-    SendMessage(g_hEditBox, EM_SETCHARFORMAT, SCF_ALL, (LPARAM)&cf);
-
-    PARAFORMAT2 pf;
-    ZeroMemory(&pf, sizeof(pf));
-    pf.cbSize = sizeof(PARAFORMAT2);
-    pf.dwMask = PFM_LINESPACING;
-    pf.bLineSpacingRule = 0;
-    SendMessage(g_hEditBox, EM_SETPARAFORMAT, 0, (LPARAM)&pf);
-
+    if (g_hCurrentFont) DeleteObject(g_hCurrentFont);
+    g_hCurrentFont = CreateFontW(
+        -g_editorFontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH,
+        g_logFont.lfFaceName[0] ? g_logFont.lfFaceName : L"Microsoft YaHei"
+    );
+    SendMessage(g_hEditBox, WM_SETFONT, (WPARAM)g_hCurrentFont, TRUE);
     InvalidateRect(g_hEditBox, NULL, TRUE);
     UpdateWindow(g_hEditBox);
 }
-
 LRESULT CALLBACK SliderSubclassProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_LBUTTONDOWN) {
         int mouseX = GET_X_LPARAM(lp); RECT rcChannel; SendMessage(hwnd, TBM_GETCHANNELRECT, 0, (LPARAM)&rcChannel);
@@ -563,12 +708,14 @@ LRESULT CALLBACK SliderSubclassProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     return CallWindowProc(g_OldSliderProc, hwnd, msg, wp, lp);
 }
-
 void ShowFindReplaceDialog();
 void ShowShiftTimeDialog();
-
 LRESULT CALLBACK EditSubclassProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_KEYDOWN) {
+        if (wp == VK_BACK || wp == VK_DELETE) {
+            PushUndoState();
+            g_isModified = true;
+        }
         if (wp == VK_F3) { InsertCurrentTime(); return 0; }
         if (wp == VK_F1) { GotoCurrentLine(); return 0; }
         if (wp == VK_F2) { CustomRedo(); return 0; }
@@ -576,11 +723,20 @@ LRESULT CALLBACK EditSubclassProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (wp == 'Z' && (GetKeyState(VK_CONTROL) & 0x8000)) { DoUndo(); return 0; }
         if (wp == 'Y' && (GetKeyState(VK_CONTROL) & 0x8000)) { DoRedo(); return 0; }
         if (wp == 'S' && (GetKeyState(VK_CONTROL) & 0x8000)) { SendMessage(GetParent(hwnd), WM_COMMAND, IDM_FILE_SAVE, 0); return 0; }
+        if (wp == 'O' && (GetKeyState(VK_CONTROL) & 0x8000)) { SendMessage(GetParent(hwnd), WM_COMMAND, IDM_FILE_OPEN, 0); return 0; }
     }
     if (msg == WM_CHAR) {
-        if (wp >= 32 || wp == VK_RETURN || wp == VK_TAB) {
+        if (wp >= 32) {
+            PushUndoState();
             g_isModified = true;
         }
+        if (wp == VK_RETURN || wp == VK_TAB) {
+            g_isModified = true;
+        }
+    }
+    if (msg == WM_PASTE || msg == WM_CUT) {
+        PushUndoState();
+        g_isModified = true;
     }
     if (msg == WM_MOUSEWHEEL) {
         short zDelta = GET_WHEEL_DELTA_WPARAM(wp);
@@ -596,7 +752,6 @@ LRESULT CALLBACK EditSubclassProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     return CallWindowProc(g_OldEditProc, hwnd, msg, wp, lp);
 }
-
 LRESULT CALLBACK FindReplaceDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_CREATE: {
@@ -616,13 +771,22 @@ LRESULT CALLBACK FindReplaceDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         return 0;
     }
     case WM_ERASEBKGND: {
-        HDC hdc = (HDC)wParam; RECT rc; GetClientRect(hwnd, &rc);
-        HBRUSH br = IsDarkMode() ? g_hDarkBrush : g_hLightBrush; FillRect(hdc, &rc, br); return 1;
+        HDC hdc = (HDC)wParam;
+        RECT rc; GetClientRect(hwnd, &rc);
+        FillRect(hdc, &rc, IsDarkMode() ? GetDarkBrush() : GetLightBrush());
+        return 1;
     }
     case WM_CTLCOLORSTATIC: {
         HDC hdc = (HDC)wParam;
-        if (IsDarkMode()) { SetBkMode(hdc, TRANSPARENT); SetTextColor(hdc, RGB(240, 240, 240)); return (LRESULT)GetStockObject(NULL_BRUSH); }
-        SetBkMode(hdc, OPAQUE); SetBkColor(hdc, GetSysColor(COLOR_WINDOW)); SetTextColor(hdc, RGB(0, 0, 0)); return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
+        if (IsDarkMode()) {
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, RGB(240, 240, 240));
+            return (LRESULT)GetDarkBrush();
+        }
+        SetBkMode(hdc, OPAQUE);
+        SetBkColor(hdc, GetSysColor(COLOR_WINDOW));
+        SetTextColor(hdc, RGB(0, 0, 0));
+        return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
     }
     case WM_COMMAND: {
         int wmId = LOWORD(wParam);
@@ -630,43 +794,41 @@ LRESULT CALLBACK FindReplaceDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         if (wmId == IDC_FR_BTN_CLOSE) { ShowWindow(hwnd, SW_HIDE); return 0; }
         int fl = GetWindowTextLengthW(g_hFrFindEdit); std::wstring findText(fl + 1, L'\0'); GetWindowTextW(g_hFrFindEdit, &findText[0], fl + 1); findText.resize(fl);
         int rl = GetWindowTextLengthW(g_hFrReplaceEdit); std::wstring replaceText(rl + 1, L'\0'); GetWindowTextW(g_hFrReplaceEdit, &replaceText[0], rl + 1); replaceText.resize(rl);
-        if (findText.empty()) { MessageBoxW(hwnd, L"请输入查找内容", L"提示", MB_OK); return 0; }
+        if (findText.empty()) { MessageBoxW(hwnd, L"请输入查找内容", L"提示", MB_OK | MB_ICONINFORMATION); return 0; }
         if (wmId == IDC_FR_BTN_FIND) {
             std::wstring text = GetFullText(); DWORD sel = (DWORD)SendMessage(g_hEditBox, EM_GETSEL, 0, 0); int startPos = HIWORD(sel); size_t pos = text.find(findText, startPos);
             if (pos != std::wstring::npos) { SendMessage(g_hEditBox, EM_SETSEL, (WPARAM)pos, (LPARAM)(pos + findText.length())); SendMessage(g_hEditBox, EM_SCROLLCARET, 0, 0); SetFocus(g_hEditBox); }
-            else { pos = text.find(findText, 0); if (pos != std::wstring::npos) { SendMessage(g_hEditBox, EM_SETSEL, (WPARAM)pos, (LPARAM)(pos + findText.length())); SendMessage(g_hEditBox, EM_SCROLLCARET, 0, 0); SetFocus(g_hEditBox); } else MessageBoxW(hwnd, (L"找不到 " + findText).c_str(), L"查找", MB_OK); }
+            else { pos = text.find(findText, 0); if (pos != std::wstring::npos) { SendMessage(g_hEditBox, EM_SETSEL, (WPARAM)pos, (LPARAM)(pos + findText.length())); SendMessage(g_hEditBox, EM_SCROLLCARET, 0, 0); SetFocus(g_hEditBox); } else MessageBoxW(hwnd, (L"找不到 " + findText).c_str(), L"查找", MB_OK | MB_ICONINFORMATION); }
         }
         else if (wmId == IDC_FR_BTN_REPLACE) {
             DWORD sel = (DWORD)SendMessage(g_hEditBox, EM_GETSEL, 0, 0); int start = LOWORD(sel); int end = HIWORD(sel);
             if (start != end) {
                 std::wstring text2 = GetFullText(); std::wstring selText = text2.substr(start, end - start);
-                if (selText == findText) { PushUndoState(); text2.replace(start, end - start, replaceText); SetEditTextNoFlicker(text2); int ns = start + (int)replaceText.length(); SendMessage(g_hEditBox, EM_SETSEL, ns, ns); SetFocus(g_hEditBox); g_isModified = true; }
+                if (selText == findText) { PushUndoState(); text2.replace(start, end - start, replaceText); SetEditText(text2); int ns = start + (int)replaceText.length(); SendMessage(g_hEditBox, EM_SETSEL, ns, ns); SetFocus(g_hEditBox); g_isModified = true; }
                 else { SendMessage(g_hEditBox, EM_SETSEL, end, end); SendMessage(hwnd, WM_COMMAND, IDC_FR_BTN_FIND, 0); }
             }
             else SendMessage(hwnd, WM_COMMAND, IDC_FR_BTN_FIND, 0);
         }
         else if (wmId == IDC_FR_BTN_REPLACE_ALL) {
             std::wstring text = GetFullText(); int count = 0; size_t pos = 0; while ((pos = text.find(findText, pos)) != std::wstring::npos) { text.replace(pos, findText.length(), replaceText); pos += replaceText.length(); count++; }
-            if (count > 0) { PushUndoState(); SetEditTextNoFlicker(text); MessageBoxW(hwnd, (L"成功替换 " + std::to_wstring(count) + L" 处").c_str(), L"替换", MB_OK); SetFocus(g_hEditBox); g_isModified = true; }
-            else MessageBoxW(hwnd, (L"找不到 " + findText).c_str(), L"替换", MB_OK);
+            if (count > 0) { PushUndoState(); SetEditText(text); MessageBoxW(hwnd, (L"成功替换 " + std::to_wstring(count) + L" 处").c_str(), L"替换", MB_OK | MB_ICONINFORMATION); SetFocus(g_hEditBox); g_isModified = true; }
+            else MessageBoxW(hwnd, (L"找不到 " + findText).c_str(), L"替换", MB_OK | MB_ICONINFORMATION);
         } return 0;
     }
     case WM_CLOSE: ShowWindow(hwnd, SW_HIDE); return 0;
     } return DefWindowProc(hwnd, msg, wParam, lParam);
 }
-
 void ShowFindReplaceDialog() {
     if (!g_hFindReplaceDlg) {
         WNDCLASSW wc = { 0 }; wc.lpfnWndProc = FindReplaceDlgProc; wc.hInstance = GetModuleHandle(NULL); wc.hCursor = LoadCursor(NULL, IDC_ARROW); wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); wc.lpszClassName = L"FindReplaceDlgClass";
         HWND mainWnd = core_api::get_main_window(); wc.hIcon = (HICON)SendMessage(mainWnd, WM_GETICON, ICON_BIG, 0); if (!wc.hIcon) wc.hIcon = LoadIcon(NULL, IDI_APPLICATION); RegisterClassW(&wc);
-        g_hFindReplaceDlg = CreateWindowExW(WS_EX_TOPMOST | WS_CLIPCHILDREN, L"FindReplaceDlgClass", L"查找和替换", WS_CAPTION | WS_SYSMENU | WS_BORDER, 100, 100, 500, 180, g_hEditorWnd, NULL, GetModuleHandle(NULL), NULL);
+        g_hFindReplaceDlg = CreateWindowExW(WS_EX_TOPMOST, L"FindReplaceDlgClass", L"查找和替换", WS_CAPTION | WS_SYSMENU | WS_BORDER, 100, 100, 500, 180, g_hEditorWnd, NULL, GetModuleHandle(NULL), NULL);
     }
     RECT wa; SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0); RECT wr; GetWindowRect(g_hFindReplaceDlg, &wr);
     int w = wr.right - wr.left, h = wr.bottom - wr.top;
     SetWindowPos(g_hFindReplaceDlg, HWND_TOPMOST, wa.left + (wa.right - wa.left - w) / 2, wa.top + (wa.bottom - wa.top - h) / 2, 0, 0, SWP_NOSIZE);
     ShowWindow(g_hFindReplaceDlg, SW_SHOW); SetForegroundWindow(g_hFindReplaceDlg); SetFocus(g_hFrFindEdit);
 }
-
 double ParseUserTimeInput(const std::wstring& input) {
     std::wstring clean = input; size_t b = clean.find(L'['); if (b != std::wstring::npos) clean = clean.substr(b + 1); size_t e = clean.find(L']'); if (e != std::wstring::npos) clean = clean.substr(0, e);
     int min = 0, sec = 0, ms = 0, sign = 1; std::wstring ps = clean; if (!ps.empty() && ps[0] == L'-') { sign = -1; ps = ps.substr(1); }
@@ -676,15 +838,18 @@ double ParseUserTimeInput(const std::wstring& input) {
         return sign * (min * 60.0 + sec + (ms / msFactor));
     } return _wtof(clean.c_str());
 }
-
 std::wstring ApplyTimeShift(const std::wstring& text, double offsetSec) {
     int offsetMs = (int)(offsetSec * 1000); if (offsetMs == 0) return text;
     std::wstring result = text; size_t searchStart = 0;
     while (true) {
         size_t bpos = result.find(L'[', searchStart); if (bpos == std::wstring::npos) break;
         size_t epos = result.find(L']', bpos); if (epos == std::wstring::npos) break;
-        std::wstring tag = result.substr(bpos + 1, epos - bpos - 1); int min = 0, sec = 0, ms = 0;
-        if (swscanf_s(tag.c_str(), L"%d:%d.%d", &min, &sec, &ms) >= 2) {
+        std::wstring tag = result.substr(bpos + 1, epos - bpos - 1);
+        // 统一改用严格判定：只认纯时间戳，[ti:]/[ar:]/[al:]/[by:] 等一律跳过，
+        // 也不再被 swscanf_s 的"前缀解析"（如 00:12.34extra）误命中。
+        if (IsTimestampString(tag)) {
+            int min = 0, sec = 0, ms = 0;
+            swscanf_s(tag.c_str(), L"%d:%d.%d", &min, &sec, &ms);
             int actualMs = ms; size_t dotPos = tag.find(L'.');
             if (dotPos != std::wstring::npos) { int digits = (int)(tag.length() - dotPos - 1); if (digits == 2) actualMs = ms * 10; else if (digits == 1) actualMs = ms * 100; else if (digits == 3) actualMs = ms; else actualMs = ms * 10; }
             int totalMs = min * 60000 + sec * 1000 + actualMs + offsetMs; if (totalMs < 0) totalMs = 0;
@@ -695,7 +860,6 @@ std::wstring ApplyTimeShift(const std::wstring& text, double offsetSec) {
         else searchStart = bpos + 1;
     } return result;
 }
-
 LRESULT CALLBACK ShiftTimeDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_CREATE: {
@@ -711,19 +875,28 @@ LRESULT CALLBACK ShiftTimeDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
         SetFocus(g_hStEdit); SendMessage(g_hStEdit, EM_SETSEL, 0, -1); return 0;
     }
     case WM_ERASEBKGND: {
-        HDC hdc = (HDC)wParam; RECT rc; GetClientRect(hwnd, &rc);
-        HBRUSH br = IsDarkMode() ? g_hDarkBrush : g_hLightBrush; FillRect(hdc, &rc, br); return 1;
+        HDC hdc = (HDC)wParam;
+        RECT rc; GetClientRect(hwnd, &rc);
+        FillRect(hdc, &rc, IsDarkMode() ? GetDarkBrush() : GetLightBrush());
+        return 1;
     }
     case WM_CTLCOLORSTATIC: {
         HDC hdc = (HDC)wParam;
-        if (IsDarkMode()) { SetBkMode(hdc, TRANSPARENT); SetTextColor(hdc, RGB(240, 240, 240)); return (LRESULT)GetStockObject(NULL_BRUSH); }
-        SetBkMode(hdc, OPAQUE); SetBkColor(hdc, GetSysColor(COLOR_WINDOW)); SetTextColor(hdc, RGB(0, 0, 0)); return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
+        if (IsDarkMode()) {
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, RGB(240, 240, 240));
+            return (LRESULT)GetDarkBrush();
+        }
+        SetBkMode(hdc, OPAQUE);
+        SetBkColor(hdc, GetSysColor(COLOR_WINDOW));
+        SetTextColor(hdc, RGB(0, 0, 0));
+        return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
     }
     case WM_COMMAND: {
         int wmId = LOWORD(wParam);
         if (wmId == IDC_ST_OK) {
             wchar_t buf[64] = { 0 }; GetWindowTextW(g_hStEdit, buf, 64); double offset = ParseUserTimeInput(buf);
-            if (offset != 0.0) { PushUndoState(); std::wstring text = GetFullText(); std::wstring newText = ApplyTimeShift(text, offset); int caret = (int)SendMessage(g_hEditBox, EM_GETSEL, 0, 0) & 0xFFFF; int fv = (int)SendMessage(g_hEditBox, EM_GETFIRSTVISIBLELINE, 0, 0); SetEditTextNoFlicker(newText, caret, fv); g_isModified = true; }
+            if (offset != 0.0) { PushUndoState(); std::wstring text = GetFullText(); std::wstring newText = ApplyTimeShift(text, offset); int caret = (int)SendMessage(g_hEditBox, EM_GETSEL, 0, 0) & 0xFFFF; int fv = (int)SendMessage(g_hEditBox, EM_GETFIRSTVISIBLELINE, 0, 0); SetEditText(newText, caret, fv); g_isModified = true; }
             ShowWindow(hwnd, SW_HIDE); return 0;
         }
         if (wmId == IDC_ST_CANCEL) { ShowWindow(hwnd, SW_HIDE); return 0; } return 0;
@@ -731,99 +904,272 @@ LRESULT CALLBACK ShiftTimeDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
     case WM_CLOSE: ShowWindow(hwnd, SW_HIDE); return 0;
     } return DefWindowProc(hwnd, msg, wParam, lParam);
 }
-
 void ShowShiftTimeDialog() {
     if (!g_hShiftTimeDlg) {
         WNDCLASSW wc = { 0 }; wc.lpfnWndProc = ShiftTimeDlgProc; wc.hInstance = GetModuleHandle(NULL); wc.hCursor = LoadCursor(NULL, IDC_ARROW); wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); wc.lpszClassName = L"ShiftTimeDlgClass";
         HWND mainWnd = core_api::get_main_window(); wc.hIcon = (HICON)SendMessage(mainWnd, WM_GETICON, ICON_BIG, 0); if (!wc.hIcon) wc.hIcon = LoadIcon(NULL, IDI_APPLICATION); RegisterClassW(&wc);
-        g_hShiftTimeDlg = CreateWindowExW(WS_EX_TOPMOST | WS_CLIPCHILDREN, L"ShiftTimeDlgClass", L"时间轴偏移", WS_CAPTION | WS_SYSMENU | WS_BORDER, 100, 100, 500, 160, g_hEditorWnd, NULL, GetModuleHandle(NULL), NULL);
+        g_hShiftTimeDlg = CreateWindowExW(WS_EX_TOPMOST, L"ShiftTimeDlgClass", L"时间轴偏移", WS_CAPTION | WS_SYSMENU | WS_BORDER, 100, 100, 500, 160, g_hEditorWnd, NULL, GetModuleHandle(NULL), NULL);
     }
     RECT wa; SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0); RECT wr; GetWindowRect(g_hShiftTimeDlg, &wr);
     int w = wr.right - wr.left, h = wr.bottom - wr.top;
     SetWindowPos(g_hShiftTimeDlg, HWND_TOPMOST, wa.left + (wa.right - wa.left - w) / 2, wa.top + (wa.bottom - wa.top - h) / 2, 0, 0, SWP_NOSIZE);
     ShowWindow(g_hShiftTimeDlg, SW_SHOW); SetForegroundWindow(g_hShiftTimeDlg); SetFocus(g_hStEdit); SendMessage(g_hStEdit, EM_SETSEL, 0, -1);
 }
-
+// ★ 保存时不再自动排序合并，只统一换行符
 std::wstring NormalizeLyrics(const std::wstring& input) {
-    std::vector<std::wstring> lines; size_t start = 0;
-    while (start <= input.size()) { size_t nl = input.find(L'\n', start); std::wstring line = (nl == std::wstring::npos) ? input.substr(start) : input.substr(start, nl - start); if (!line.empty() && line.back() == L'\r') line.pop_back(); if (!line.empty()) lines.push_back(line); if (nl == std::wstring::npos) break; start = nl + 1; }
-    std::map<std::wstring, std::vector<std::wstring>> timeline; std::vector<std::wstring> headers;
-    for (const auto& line : lines) { size_t bpos = line.find(L'['); size_t epos = line.find(L']'); if (bpos != std::wstring::npos && epos != std::wstring::npos && epos > bpos) { std::wstring tag = line.substr(bpos, epos - bpos + 1); std::wstring content = line.substr(epos + 1); if (tag.length() > 1 && iswdigit(tag[1])) timeline[tag].push_back(content); else headers.push_back(line); } else headers.push_back(line); }
-    std::wstring result; for (const auto& h : headers) result += h + L"\r\n"; for (const auto& pair : timeline) for (const auto& content : pair.second) result += pair.first + content + L"\r\n"; return result;
+    std::wstring result;
+    size_t start = 0;
+    while (start <= input.size()) {
+        size_t nl = input.find(L'\n', start);
+        std::wstring line = (nl == std::wstring::npos) ? input.substr(start) : input.substr(start, nl - start);
+        if (!line.empty() && line.back() == L'\r') line.pop_back();
+        result += line;
+        if (nl == std::wstring::npos) break;
+        result += L"\r\n";
+        start = nl + 1;
+    }
+    return result;
+}
+// ★ 新增：生成默认 LRC 头部信息
+std::wstring GenerateDefaultLrcHeader(metadb_handle_ptr item) {
+    std::wstring ti, ar, al;
+    if (item.is_valid()) {
+        metadb_info_container::ptr info_ref = item->get_info_ref();
+        if (info_ref.is_valid()) {
+            const file_info& info = info_ref->info();
+            t_size count = info.meta_get_count();
+            for (t_size i = 0; i < count; i++) {
+                const char* name = info.meta_enum_name(i);
+                if (name) {
+                    if (_stricmp(name, "TITLE") == 0 && info.meta_enum_value_count(i) > 0) {
+                        pfc::stringcvt::string_wide_from_utf8 w(info.meta_enum_value(i, 0));
+                        ti = w.get_ptr();
+                    }
+                    else if (_stricmp(name, "ARTIST") == 0 && info.meta_enum_value_count(i) > 0) {
+                        pfc::stringcvt::string_wide_from_utf8 w(info.meta_enum_value(i, 0));
+                        ar = w.get_ptr();
+                    }
+                    else if (_stricmp(name, "ALBUM") == 0 && info.meta_enum_value_count(i) > 0) {
+                        pfc::stringcvt::string_wide_from_utf8 w(info.meta_enum_value(i, 0));
+                        al = w.get_ptr();
+                    }
+                }
+            }
+        }
+    }
+    wchar_t username[256] = { 0 };
+    DWORD username_len = 256;
+    GetUserNameW(username, &username_len);
+    return L"[ti:" + ti + L"]\r\n[ar:" + ar + L"]\r\n[al:" + al + L"]\r\n[by:" + std::wstring(username) + L"]\r\n\r\nᠡᠨᠳᠡ ᠮᠣᠩᠭᠣᠯ ᠳᠠᠭᠤᠨ ᠤ ᠦᠭᠡ ᠨᠠᠢᠷᠠᠭᠤᠯᠤᠭᠠᠷᠠᠢ\r\n请在此处编辑蒙古文歌词";
+}
+// ★ 新增：手动合并所有双语歌词（不留空行）
+void MergeAllDualLyrics() {
+    std::wstring text = GetFullText();
+    std::vector<std::wstring> lines;
+    size_t start = 0;
+    while (start <= text.size()) {
+        size_t nl = text.find(L'\n', start);
+        std::wstring line = (nl == std::wstring::npos) ? text.substr(start) : text.substr(start, nl - start);
+        if (!line.empty() && line.back() == L'\r') line.pop_back();
+        lines.push_back(line);
+        if (nl == std::wstring::npos) break;
+        start = nl + 1;
+    }
+
+    std::vector<std::wstring> headers;
+    struct LineInfo {
+        std::wstring timestamp;
+        std::wstring content;
+        int blockOrder;
+        int paragraphIdx;
+    };
+    std::vector<LineInfo> lyricLines;
+
+    int blockOrder = 0;
+    int paragraphIdx = 0;
+    bool inBlock = false;
+    bool firstLyricFound = false;
+
+    for (const auto& line : lines) {
+        if (line.empty()) {
+            if (inBlock) paragraphIdx++;
+            else if (firstLyricFound) { blockOrder++; paragraphIdx = 0; }
+            continue;
+        }
+        size_t bpos = line.find(L'[');
+        size_t epos = line.find(L']');
+        if (bpos != std::wstring::npos && epos != std::wstring::npos && epos > bpos && bpos < 10) {
+            std::wstring tag = line.substr(bpos + 1, epos - bpos - 1);
+            // 与全局口径一致，避免 [by:2020] 之类被当成歌词行参与排序
+            bool isTimestamp = IsTimestampString(tag);
+            if (isTimestamp) {
+                if (!firstLyricFound) { firstLyricFound = true; inBlock = true; }
+                lyricLines.push_back({ tag, line.substr(epos + 1), blockOrder, paragraphIdx });
+            }
+            else headers.push_back(line);
+        }
+        else headers.push_back(line);
+    }
+
+    // 排序：时间戳 -> 块序号(原文在前) -> 段落索引
+    std::sort(lyricLines.begin(), lyricLines.end(), [](const LineInfo& a, const LineInfo& b) {
+        if (a.timestamp != b.timestamp) return a.timestamp < b.timestamp;
+        if (a.blockOrder != b.blockOrder) return a.blockOrder < b.blockOrder;
+        return a.paragraphIdx < b.paragraphIdx;
+        });
+
+    std::wstring result;
+    for (const auto& h : headers) result += h + L"\r\n";
+    if (!headers.empty() && !lyricLines.empty()) result += L"\r\n";
+
+    // ★ 修改：直接输出所有歌词行，不再插入段落空行
+    for (const auto& info : lyricLines) {
+        result += L"[" + info.timestamp + L"]" + info.content + L"\r\n";
+    }
+
+    PushUndoState();
+    SetEditText(result);
+    g_isModified = true;
 }
 
+void OpenLrcFile() {
+    wchar_t szFile[MAX_PATH] = { 0 };
+    OPENFILENAMEW ofn = { 0 };
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = g_hEditorWnd;
+    ofn.lpstrFilter = L"LRC Files (*.lrc)\0*.lrc\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFile = szFile;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.Flags = OFN_EXPLORER | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY | OFN_FILEMUSTEXIST;
+    ofn.lpstrDefExt = L"lrc";
+
+    if (GetOpenFileNameW(&ofn)) {
+        if (g_isModified) {
+            int ret = MessageBoxW(g_hEditorWnd, L"当前歌词已修改，是否保存？", L"提示", MB_YESNOCANCEL | MB_ICONINFORMATION);
+            if (ret == IDYES) {
+                if (!SmartSave()) return;
+            }
+            else if (ret == IDCANCEL) {
+                return;
+            }
+        }
+
+        HANDLE hFile = CreateFileW(szFile, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hFile != INVALID_HANDLE_VALUE) {
+            DWORD fileSize = GetFileSize(hFile, NULL);
+            if (fileSize > 0 && fileSize < 10 * 1024 * 1024) {
+                char* buffer = new char[fileSize + 1];
+                if (ReadFile(hFile, buffer, fileSize, NULL, NULL)) {
+                    buffer[fileSize] = '\0';
+                    std::string content(buffer);
+                    if (fileSize >= 3 && (unsigned char)buffer[0] == 0xEF && (unsigned char)buffer[1] == 0xBB && (unsigned char)buffer[2] == 0xBF) {
+                        content = content.substr(3);
+                    }
+                    pfc::stringcvt::string_wide_from_utf8 wideContent(content.c_str());
+                    std::wstring wContent = wideContent.get_ptr();
+                    if (wContent.empty()) {
+                        metadb_handle_ptr currentItem;
+                        if (playback_control::get()->get_now_playing(currentItem)) {
+                            wContent = GenerateDefaultLrcHeader(currentItem);
+                        }
+                        else {
+                            wchar_t username[256] = { 0 };
+                            DWORD username_len = 256;
+                            GetUserNameW(username, &username_len);
+                            wContent = L"[ti:]\r\n[ar:]\r\n[al:]\r\n[by:" + std::wstring(username) + L"]\r\n\r\nᠡᠨᠳᠡ ᠮᠣᠩᠭᠣᠯ ᠳᠠᠭᠤᠨ ᠤ ᠦᠭᠡ ᠨᠠᠢᠷᠠᠭᠤᠯᠤᠭᠠᠷᠠᠢ\r\n请在此处编辑蒙古文歌词";
+                        }
+                    }
+                    g_undoStack.clear();
+                    g_redoStack.clear();
+                    SetEditText(wContent);
+                    g_currentTrackPath = szFile;
+                    g_sourceIsEmbedded = false;
+                    g_isModified = false;
+                    std::wstring wTitle = L"蒙古文歌词编辑器 - ";
+                    std::wstring fileName = szFile;
+                    size_t lastSlash = fileName.find_last_of(L"\\/");
+                    if (lastSlash != std::wstring::npos) {
+                        fileName = fileName.substr(lastSlash + 1);
+                    }
+                    size_t lastDot = fileName.find_last_of(L'.');
+                    if (lastDot != std::wstring::npos) {
+                        fileName = fileName.substr(0, lastDot);
+                    }
+                    wTitle += fileName;
+                    SetWindowTextW(g_hEditorWnd, wTitle.c_str());
+                }
+                delete[] buffer;
+            }
+            CloseHandle(hFile);
+        }
+        else {
+            MessageBoxW(g_hEditorWnd, L"打开文件失败", L"错误", MB_ICONINFORMATION);
+        }
+    }
+}
 bool SaveToLrcFile() {
-    if (g_currentTrackPath.empty()) { MessageBoxW(g_hEditorWnd, L"无法获取路径", L"错误", MB_ICONERROR); return false; }
+    if (g_currentTrackPath.empty()) { MessageBoxW(g_hEditorWnd, L"无法获取路径", L"错误", MB_ICONINFORMATION); return false; }
     std::wstring text = GetFullText(); text = NormalizeLyrics(text);
     pfc::stringcvt::string_utf8_from_wide utf8Text(text.c_str()); pfc::string8 lyrics_utf8 = utf8Text.get_ptr();
     HANDLE hFile = CreateFileW(g_currentTrackPath.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (hFile != INVALID_HANDLE_VALUE) { DWORD written; char bom[] = { (char)0xEF, (char)0xBB, (char)0xBF }; WriteFile(hFile, bom, 3, &written, NULL); WriteFile(hFile, lyrics_utf8.get_ptr(), (DWORD)lyrics_utf8.length(), &written, NULL); CloseHandle(hFile); MessageBoxW(g_hEditorWnd, L"已保存到音频同目录", L"提示", MB_OK); g_isModified = false; return true; }
-    else MessageBoxW(g_hEditorWnd, L"保存失败", L"错误", MB_ICONERROR);
+    if (hFile != INVALID_HANDLE_VALUE) { DWORD written; char bom[] = { (char)0xEF, (char)0xBB, (char)0xBF }; WriteFile(hFile, bom, 3, &written, NULL); WriteFile(hFile, lyrics_utf8.get_ptr(), (DWORD)lyrics_utf8.length(), &written, NULL); CloseHandle(hFile); MessageBoxW(g_hEditorWnd, L"已保存到音频同目录", L"提示", MB_OK | MB_ICONINFORMATION); g_isModified = false; return true; }
+    else MessageBoxW(g_hEditorWnd, L"保存失败", L"错误", MB_ICONINFORMATION);
     return false;
 }
-
 bool SaveToEmbeddedTag() {
-    metadb_handle_ptr item; if (!playback_control::get()->get_now_playing(item)) { MessageBoxW(g_hEditorWnd, L"没有播放歌曲", L"错误", MB_OK); return false; }
+    metadb_handle_ptr item; if (!playback_control::get()->get_now_playing(item)) { MessageBoxW(g_hEditorWnd, L"没有播放歌曲", L"错误", MB_ICONINFORMATION); return false; }
     std::wstring text = GetFullText(); text = NormalizeLyrics(text);
     pfc::stringcvt::string_utf8_from_wide utf8Text(text.c_str()); pfc::string8 lyrics_utf8 = utf8Text.get_ptr();
     file_info_impl info; item->get_info(info); info.meta_set("LYRICS", lyrics_utf8); info.meta_remove_field("UNSYNCEDLYRICS");
     metadb_handle_list handles; handles.add_item(item); pfc::list_t<const file_info*> infos; infos.add_item(&info);
-    try { static_api_ptr_t<metadb_io_v2> io; io->update_info_async_simple(handles, infos, g_hEditorWnd, metadb_io_v2::op_flag_background, nullptr); MessageBoxW(g_hEditorWnd, L"已保存到内嵌标签", L"提示", MB_OK); g_isModified = false; return true; }
-    catch (...) { MessageBoxW(g_hEditorWnd, L"保存失败", L"错误", MB_ICONERROR); }
+    try { static_api_ptr_t<metadb_io_v2> io; io->update_info_async_simple(handles, infos, g_hEditorWnd, metadb_io_v2::op_flag_background, nullptr); MessageBoxW(g_hEditorWnd, L"已保存到内嵌标签", L"提示", MB_OK | MB_ICONINFORMATION); g_isModified = false; return true; }
+    catch (...) { MessageBoxW(g_hEditorWnd, L"保存失败", L"错误", MB_ICONINFORMATION); }
     return false;
 }
-
 bool SaveAsLrcFile() {
-    wchar_t szFile[MAX_PATH] = { 0 }; OPENFILENAMEW ofn = { 0 }; ofn.lStructSize = sizeof(ofn); ofn.hwndOwner = g_hEditorWnd; ofn.lpstrFilter = L"LRC Files (*.lrc)\0*.lrc\0All Files (*.*)\0*.*\0"; ofn.lpstrFile = szFile; ofn.nMaxFile = MAX_PATH; ofn.Flags = OFN_EXPLORER | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT; ofn.lpstrDefExt = L"lrc";
+    wchar_t szFile[MAX_PATH] = { 0 }; OPENFILENAMEW ofn = { 0 }; ofn.lStructSize = sizeof(ofn); ofn.hwndOwner = g_hEditorWnd;
+    ofn.lpstrFilter = L"LRC Files (*.lrc)\0*.lrc\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFile = szFile; ofn.nMaxFile = MAX_PATH; ofn.Flags = OFN_EXPLORER | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT; ofn.lpstrDefExt = L"lrc";
     if (GetSaveFileNameW(&ofn)) {
         std::wstring text = GetFullText(); text = NormalizeLyrics(text);
         pfc::stringcvt::string_utf8_from_wide utf8Text(text.c_str()); pfc::string8 lyrics_utf8 = utf8Text.get_ptr();
         HANDLE hFile = CreateFileW(szFile, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-        if (hFile != INVALID_HANDLE_VALUE) { DWORD written; char bom[] = { (char)0xEF, (char)0xBB, (char)0xBF }; WriteFile(hFile, bom, 3, &written, NULL); WriteFile(hFile, lyrics_utf8.get_ptr(), (DWORD)lyrics_utf8.length(), &written, NULL); CloseHandle(hFile); g_currentTrackPath = szFile; g_sourceIsEmbedded = false; MessageBoxW(g_hEditorWnd, L"保存成功", L"提示", MB_OK); g_isModified = false; return true; }
-        else MessageBoxW(g_hEditorWnd, L"保存失败", L"错误", MB_ICONERROR);
+        if (hFile != INVALID_HANDLE_VALUE) { DWORD written; char bom[] = { (char)0xEF, (char)0xBB, (char)0xBF }; WriteFile(hFile, bom, 3, &written, NULL); WriteFile(hFile, lyrics_utf8.get_ptr(), (DWORD)lyrics_utf8.length(), &written, NULL); CloseHandle(hFile); g_currentTrackPath = szFile; g_sourceIsEmbedded = false; MessageBoxW(g_hEditorWnd, L"保存成功", L"提示", MB_OK | MB_ICONINFORMATION); g_isModified = false; return true; }
+        else MessageBoxW(g_hEditorWnd, L"保存失败", L"错误", MB_ICONINFORMATION);
     }
     return false;
 }
-
 bool SmartSave() {
     bool res = false;
     if (g_sourceIsEmbedded) res = SaveToEmbeddedTag();
     else res = SaveToLrcFile();
     return res;
 }
-
 std::wstring GetTrackDisplayTitle(metadb_handle_ptr item) {
     pfc::string8 title, artist; metadb_info_container::ptr info_ref = item->get_info_ref();
     if (info_ref.is_valid()) { const file_info& info = info_ref->info(); t_size count = info.meta_get_count(); for (t_size i = 0; i < count; i++) { const char* name = info.meta_enum_name(i); if (name) { if (_stricmp(name, "TITLE") == 0) { if (info.meta_enum_value_count(i) > 0) title = info.meta_enum_value(i, 0); } else if (_stricmp(name, "ARTIST") == 0) { if (info.meta_enum_value_count(i) > 0) artist = info.meta_enum_value(i, 0); } } } }
     pfc::stringcvt::string_wide_from_utf8 wt(title); pfc::stringcvt::string_wide_from_utf8 wa(artist); std::wstring s; if (!title.is_empty()) s += wt.get_ptr(); if (!artist.is_empty()) { if (!title.is_empty()) s += L" - "; s += wa.get_ptr(); } if (s.empty()) s = L"无标题"; return s;
 }
-
 std::wstring LoadLyricsText(metadb_handle_ptr item, const std::wstring& lrcPath) {
     pfc::string8 lyrics; g_sourceIsEmbedded = false;
     if (item.is_valid()) { metadb_info_container::ptr info_ref = item->get_info_ref(); if (info_ref.is_valid()) { const file_info& info = info_ref->info(); t_size count = info.meta_get_count(); for (t_size i = 0; i < count; i++) { const char* name = info.meta_enum_name(i); if (name && (_stricmp(name, "LYRICS") == 0 || _stricmp(name, "UNSYNCEDLYRICS") == 0)) { if (info.meta_enum_value_count(i) > 0) { lyrics = info.meta_enum_value(i, 0); g_sourceIsEmbedded = true; break; } } } } }
     if (lyrics.is_empty() && !lrcPath.empty()) { g_sourceIsEmbedded = false; HANDLE hFile = CreateFileW(lrcPath.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL); if (hFile != INVALID_HANDLE_VALUE) { DWORD fileSize = GetFileSize(hFile, NULL); if (fileSize > 0 && fileSize < 10 * 1024 * 1024) { char* buffer = new char[fileSize + 1]; if (ReadFile(hFile, buffer, fileSize, NULL, NULL)) { buffer[fileSize] = '\0'; if (fileSize >= 3 && (unsigned char)buffer[0] == 0xEF && (unsigned char)buffer[1] == 0xBB && (unsigned char)buffer[2] == 0xBF) lyrics = buffer + 3; else lyrics = buffer; } delete[] buffer; } CloseHandle(hFile); } }
     pfc::stringcvt::string_wide_from_utf8 wideLyrics(lyrics); return wideLyrics.get_ptr();
 }
-
 std::wstring GetLrcPathFromPath(const std::wstring& audioPath) {
     std::wstring wpath = audioPath; if (wpath.find(L"file://") == 0) { wpath = wpath.substr(7); if (!wpath.empty() && wpath[0] == L'/') wpath = wpath.substr(1); } for (wchar_t& c : wpath) { if (c == L'/') c = L'\\'; } size_t dotPos = wpath.find_last_of(L'.'); if (dotPos != std::wstring::npos) return wpath.substr(0, dotPos) + L".lrc"; return L"";
 }
-
 static void DoLayout(HWND hwnd) {
     RECT rc; GetClientRect(hwnd, &rc);
     int width = rc.right, height = rc.bottom;
     int margin = 10, row1Y = 10, row2Y = 50, btnH = 32, btnW = 110, gap = 10;
     int x = margin;
-
-    // --- 第一行控件布局 ---
     if (g_hBtnPause) SetWindowPos(g_hBtnPause, NULL, x, row1Y, 70, btnH, SWP_NOZORDER); x += 70 + gap;
     HWND hInsert = GetDlgItem(hwnd, IDC_BTN_INSERT);
     if (hInsert) SetWindowPos(hInsert, NULL, x, row1Y, 110, btnH, SWP_NOZORDER); x += 110 + gap;
     if (g_hChkDual) SetWindowPos(g_hChkDual, NULL, x, row1Y + 6, 110, 24, SWP_NOZORDER); x += 110 + gap;
     if (g_hSliderProgress) SetWindowPos(g_hSliderProgress, NULL, x, row1Y + 5, SLIDER_FIXED_WIDTH, 30, SWP_NOZORDER); x += SLIDER_FIXED_WIDTH + 10;
     if (g_hLblTime) SetWindowPos(g_hLblTime, NULL, x, row1Y + 6, TIME_LABEL_WIDTH, 24, SWP_NOZORDER);
-
-    // --- 第二行控件布局 ---
     int bx = margin;
     HWND hGoto = GetDlgItem(hwnd, IDC_BTN_GOTO_LINE), hBack = GetDlgItem(hwnd, IDC_BTN_BACK), hUndo = GetDlgItem(hwnd, IDC_BTN_UNDO), hRemCur = GetDlgItem(hwnd, IDC_BTN_REMOVE_CUR), hRemAll = GetDlgItem(hwnd, IDC_BTN_REMOVE_ALL);
     if (hGoto) SetWindowPos(hGoto, NULL, bx, row2Y, btnW, btnH, SWP_NOZORDER); bx += btnW + gap;
@@ -831,44 +1177,44 @@ static void DoLayout(HWND hwnd) {
     if (hUndo) SetWindowPos(hUndo, NULL, bx, row2Y, btnW, btnH, SWP_NOZORDER); bx += btnW + gap;
     if (hRemCur) SetWindowPos(hRemCur, NULL, bx, row2Y, btnW, btnH, SWP_NOZORDER); bx += btnW + gap;
     if (hRemAll) SetWindowPos(hRemAll, NULL, bx, row2Y, btnW, btnH, SWP_NOZORDER);
-
-    // --- 编辑框与底部按钮布局 (核心修复区域) ---
-    int editY = row2Y + btnH + margin; // 92
-    int bottomY = height - 45;         // 底部按钮的 Y 坐标
-
-    // ★★★ 修复 1：动态计算编辑框高度，确保其底部与按钮顶部至少保留 15 像素的安全间距，防止重叠 ★★★
+    int editY = row2Y + btnH + margin;
+    int bottomY = height - 45;
     int editH = bottomY - editY - 15;
-    if (editH < 80) editH = 80; // 保证最小编辑区高度
+    if (editH < 80) editH = 80;
     if (g_hEditBox) SetWindowPos(g_hEditBox, NULL, margin, editY, width - 2 * margin, editH, SWP_NOZORDER);
-
-    // --- 底部按钮布局 ---
     int wBtn = 80;
     int rightX = width - margin;
     HWND hCancel = GetDlgItem(hwnd, IDC_BTN_CANCEL), hOk = GetDlgItem(hwnd, IDC_BTN_OK), hApply = GetDlgItem(hwnd, IDC_BTN_APPLY);
-
-    // ★★★ 修复 2：使用 HWND_TOP 强制将底部按钮置于 Z-order 最顶层，防止被 RichEdit 控件遮挡 ★★★
-    // 注意：按 Apply -> Ok -> Cancel 的顺序调用 HWND_TOP，最终层叠顺序为 Cancel(最上) -> Ok -> Apply，均能正常显示
+    if (hCancel) SetWindowPos(hCancel, HWND_TOP, rightX - wBtn, bottomY, wBtn, 32, 0);
+    rightX -= wBtn + 10;
     if (hApply) SetWindowPos(hApply, HWND_TOP, rightX - wBtn, bottomY, wBtn, 32, 0);
     rightX -= wBtn + 10;
     if (hOk) SetWindowPos(hOk, HWND_TOP, rightX - wBtn, bottomY, wBtn, 32, 0);
-    rightX -= wBtn + 10;
-    if (hCancel) SetWindowPos(hCancel, HWND_TOP, rightX - wBtn, bottomY, wBtn, 32, 0);
 }
-
 void TryCloseWindow() {
     if (g_isModified) {
-        int ret = MessageBoxW(g_hEditorWnd, L"歌词已修改，是否保存？", L"提示", MB_YESNOCANCEL | MB_ICONWARNING);
+        int ret = MessageBoxW(g_hEditorWnd, L"歌词已修改，是否保存？", L"提示", MB_YESNOCANCEL | MB_ICONINFORMATION);
         if (ret == IDYES) { if (SmartSave()) DestroyWindow(g_hEditorWnd); }
         else if (ret == IDNO) { DestroyWindow(g_hEditorWnd); }
     }
     else { DestroyWindow(g_hEditorWnd); }
 }
-
 LRESULT CALLBACK EditorWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_ERASEBKGND: {
-        HDC hdc = (HDC)wParam; RECT rc; GetClientRect(hwnd, &rc);
-        HBRUSH br = IsDarkMode() ? g_hDarkBrush : g_hLightBrush; FillRect(hdc, &rc, br); return 1;
+        HDC hdc = (HDC)wParam;
+        RECT rc; GetClientRect(hwnd, &rc);
+        FillRect(hdc, &rc, IsDarkMode() ? GetDarkBrush() : GetLightBrush());
+        return 1;
+    }
+    case WM_CTLCOLORBTN: {
+        HDC hdc = (HDC)wParam;
+        if (IsDarkMode()) {
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, RGB(240, 240, 240));
+            return (LRESULT)GetDarkBrush();
+        }
+        break;
     }
     case WM_NOTIFY: {
         LPNMHDR pnmh = (LPNMHDR)lParam;
@@ -880,38 +1226,37 @@ LRESULT CALLBACK EditorWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
             }
         } break;
     }
-    case WM_CTLCOLOREDIT: {
-        HDC hdc = (HDC)wParam;
-        if (IsDarkMode()) { SetBkMode(hdc, OPAQUE); SetBkColor(hdc, RGB(25, 25, 25)); SetTextColor(hdc, RGB(240, 240, 240)); return (LRESULT)g_hDarkBrush; }
-        SetBkMode(hdc, OPAQUE); SetBkColor(hdc, GetSysColor(COLOR_WINDOW)); SetTextColor(hdc, RGB(0, 0, 0)); return (LRESULT)g_hLightBrush;
-    }
     case WM_CTLCOLORSTATIC: {
         HDC hdc = (HDC)wParam;
-        if (IsDarkMode()) { SetBkMode(hdc, TRANSPARENT); SetTextColor(hdc, RGB(240, 240, 240)); return (LRESULT)GetStockObject(NULL_BRUSH); }
+        if (IsDarkMode()) { SetBkMode(hdc, TRANSPARENT); SetTextColor(hdc, RGB(240, 240, 240)); return (LRESULT)GetDarkBrush(); }
         SetBkMode(hdc, OPAQUE); SetBkColor(hdc, GetSysColor(COLOR_WINDOW)); SetTextColor(hdc, RGB(0, 0, 0)); return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
     }
     case WM_SIZE:
     case WM_MOVE: {
-        GetWindowRect(hwnd, &g_windowRect); g_hasSavedPos = true;
+        // 最小化(-32000 等屏幕外坐标) / 最大化(整屏尺寸) 一律不记，
+        // 否则关掉再打开就会把窗口建到屏幕外。布局调整照常做。
+        if (!IsIconic(hwnd) && !IsZoomed(hwnd)) {
+            RECT rc;
+            if (GetWindowRect(hwnd, &rc) && rc.right > rc.left && rc.bottom > rc.top) {
+                g_windowRect = rc; g_hasSavedPos = true;
+            }
+        }
         if (msg == WM_SIZE) DoLayout(hwnd);
         return 0;
     }
     case WM_CREATE: {
-        g_hDarkBrush = CreateSolidBrush(RGB(30, 30, 30));
-        g_hLightBrush = GetSysColorBrush(COLOR_WINDOW);
         if (!g_pEditorHooks) g_pEditorHooks = new fb2k::CCoreDarkModeHooks();
-
         LoadSettings();
-
         metadb_handle_ptr item; if (!playback_control::get()->get_now_playing(item)) { MessageBoxW(hwnd, L"没有播放歌曲", L"提示", MB_ICONINFORMATION); return -1; }
         pfc::string8 filepath = item->get_path(); pfc::stringcvt::string_wide_from_utf8 widePath(filepath); g_currentTrackPath = GetLrcPathFromPath(widePath.get_ptr());
         std::wstring wTitle = L"蒙古文歌词编辑器 - "; wTitle += GetTrackDisplayTitle(item); SetWindowTextW(hwnd, wTitle.c_str());
-
         HMENU hMenu = CreateMenu(); HMENU hFile = CreatePopupMenu();
+        AppendMenuW(hFile, MF_STRING, IDM_FILE_OPEN, L"打开 (&O)\tCtrl+O");
         AppendMenuW(hFile, MF_STRING, IDM_FILE_SAVE, L"保存到音频所在位置 (&S)\tCtrl+S");
-        AppendMenuW(hFile, MF_STRING, IDM_FILE_SAVE_AS, L"另存为 (&A)...");
         AppendMenuW(hFile, MF_STRING, IDM_FILE_SAVE_TAG, L"保存到内嵌标签 (&T)");
-        AppendMenuW(hFile, MF_SEPARATOR, 0, NULL); AppendMenuW(hFile, MF_STRING, IDM_FILE_EXIT, L"退出 (&X)");
+        AppendMenuW(hFile, MF_STRING, IDM_FILE_SAVE_AS, L"另存为 (&A)...");
+        AppendMenuW(hFile, MF_SEPARATOR, 0, NULL);
+        AppendMenuW(hFile, MF_STRING, IDM_FILE_EXIT, L"退出 (&X)");
         AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)hFile, L"文件(&F)");
         HMENU hEdit = CreatePopupMenu();
         AppendMenuW(hEdit, MF_STRING | (g_isDualMode ? MF_CHECKED : MF_UNCHECKED), IDM_EDIT_DUAL, L"插入双语歌词 (&D)");
@@ -921,9 +1266,9 @@ LRESULT CALLBACK EditorWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
         AppendMenuW(hEdit, MF_SEPARATOR, 0, NULL);
         AppendMenuW(hEdit, MF_STRING, IDM_EDIT_REMOVE_ORIG, L"移除所有原文歌词");
         AppendMenuW(hEdit, MF_STRING, IDM_EDIT_REMOVE_TRANS, L"移除所有翻译行歌词");
+        AppendMenuW(hEdit, MF_STRING, IDM_EDIT_MERGE_DUAL, L"合并所有双语歌词 (&M)");
         AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)hEdit, L"编辑(&E)");
         HMENU hFont = CreatePopupMenu(); AppendMenuW(hFont, MF_STRING, IDM_FONT_CHANGE, L"字体更换 (&F)..."); AppendMenuW(hFont, MF_STRING, IDM_FONT_ZOOM_IN, L"放大字体 (&I)\tCtrl++"); AppendMenuW(hFont, MF_STRING, IDM_FONT_ZOOM_OUT, L"缩小字体 (&O)\tCtrl+-"); AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)hFont, L"字体(&T)"); SetMenu(hwnd, hMenu);
-
         RECT rc; GetClientRect(hwnd, &rc); int width = rc.right, height = rc.bottom;
         if (!g_hButtonFont) g_hButtonFont = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Microsoft YaHei UI");
 
@@ -935,33 +1280,34 @@ LRESULT CALLBACK EditorWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
         g_OldSliderProc = (WNDPROC)SetWindowLongPtr(g_hSliderProgress, GWLP_WNDPROC, (LONG_PTR)SliderSubclassProc);
         g_hLblTime = CreateWindowW(L"STATIC", L"00:00.00 / 00:00.00", WS_CHILD | WS_VISIBLE | SS_RIGHT, 600, 16, TIME_LABEL_WIDTH, 24, hwnd, (HMENU)IDC_LBL_TIME, NULL, NULL);
         SendMessage(g_hLblTime, WM_SETFONT, (WPARAM)g_hButtonFont, TRUE);
-
         int bx = 10; int btnW = 110; int gap = 10; int row2Y = 50;
         HWND hGoto = CreateWindowW(L"BUTTON", L"跳转当前行 (F1)", WS_CHILD | WS_VISIBLE, bx, row2Y, btnW, 32, hwnd, (HMENU)IDC_BTN_GOTO_LINE, NULL, NULL); SendMessage(hGoto, WM_SETFONT, (WPARAM)g_hButtonFont, TRUE); bx += btnW + gap;
         HWND hBack = CreateWindowW(L"BUTTON", L"回退当前句 (F2)", WS_CHILD | WS_VISIBLE, bx, row2Y, btnW, 32, hwnd, (HMENU)IDC_BTN_BACK, NULL, NULL); SendMessage(hBack, WM_SETFONT, (WPARAM)g_hButtonFont, TRUE); bx += btnW + gap;
         HWND hUndo = CreateWindowW(L"BUTTON", L"撤销 (Ctrl+Z)", WS_CHILD | WS_VISIBLE, bx, row2Y, btnW, 32, hwnd, (HMENU)IDC_BTN_UNDO, NULL, NULL); SendMessage(hUndo, WM_SETFONT, (WPARAM)g_hButtonFont, TRUE); bx += btnW + gap;
         HWND hRemCur = CreateWindowW(L"BUTTON", L"移除当前", WS_CHILD | WS_VISIBLE, bx, row2Y, btnW, 32, hwnd, (HMENU)IDC_BTN_REMOVE_CUR, NULL, NULL); SendMessage(hRemCur, WM_SETFONT, (WPARAM)g_hButtonFont, TRUE); bx += btnW + gap;
         HWND hRemAll = CreateWindowW(L"BUTTON", L"移除全部", WS_CHILD | WS_VISIBLE, bx, row2Y, btnW, 32, hwnd, (HMENU)IDC_BTN_REMOVE_ALL, NULL, NULL); SendMessage(hRemAll, WM_SETFONT, (WPARAM)g_hButtonFont, TRUE);
-
         int editBoxY = 100; int editBoxHeight = height - editBoxY - 60;
-        g_hEditBox = CreateWindowExW(WS_EX_CLIENTEDGE, L"RichEdit50W", L"", WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL | ES_WANTRETURN | ES_NOHIDESEL, 10, editBoxY, width - 20, editBoxHeight, hwnd, (HMENU)IDC_EDIT_LYRIC, NULL, NULL);
-        if (IsDarkMode()) SendMessage(g_hEditBox, EM_SETBKGNDCOLOR, 0, (LPARAM)RGB(25, 25, 25));
-
+        g_hEditBox = CreateWindowExW(
+            WS_EX_CLIENTEDGE,
+            L"EDIT",
+            L"",
+            WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | WS_VSCROLL | WS_HSCROLL | ES_WANTRETURN,
+            10, editBoxY, width - 20, editBoxHeight,
+            hwnd, (HMENU)IDC_EDIT_LYRIC, NULL, NULL
+        );
         g_OldEditProc = (WNDPROC)SetWindowLongPtr(g_hEditBox, GWLP_WNDPROC, (LONG_PTR)EditSubclassProc);
-
-        // ★★★ 补全底部缺失的 应用、确定、取消 按钮创建代码 ★★★
         HWND hApply = CreateWindowW(L"BUTTON", L"应用", WS_CHILD | WS_VISIBLE, 0, 0, 80, 32, hwnd, (HMENU)IDC_BTN_APPLY, NULL, NULL);
         SendMessage(hApply, WM_SETFONT, (WPARAM)g_hButtonFont, TRUE);
         HWND hOk = CreateWindowW(L"BUTTON", L"确定", WS_CHILD | WS_VISIBLE, 0, 0, 80, 32, hwnd, (HMENU)IDC_BTN_OK, NULL, NULL);
         SendMessage(hOk, WM_SETFONT, (WPARAM)g_hButtonFont, TRUE);
         HWND hCancel = CreateWindowW(L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE, 0, 0, 80, 32, hwnd, (HMENU)IDC_BTN_CANCEL, NULL, NULL);
         SendMessage(hCancel, WM_SETFONT, (WPARAM)g_hButtonFont, TRUE);
-
         std::wstring lyrics = LoadLyricsText(item, g_currentTrackPath);
+        if (lyrics.empty()) {
+            lyrics = GenerateDefaultLrcHeader(item);
+        }
         SetWindowTextW(g_hEditBox, lyrics.c_str());
-
         ApplyNewFont();
-
         if (g_sourceIsEmbedded) SetWindowTextW(hwnd, (wTitle + L" (内嵌标签)").c_str());
         g_pEditorHooks->AddDialogWithControls(hwnd);
         g_pEditorHooks->AddCtrlAuto(g_hChkDual);
@@ -979,6 +1325,7 @@ LRESULT CALLBACK EditorWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
         if (HIWORD(wParam) == EN_CHANGE && LOWORD(wParam) == IDC_EDIT_LYRIC) g_isModified = true;
         int wmId = LOWORD(wParam);
         switch (wmId) {
+        case IDM_FILE_OPEN: OpenLrcFile(); break;
         case IDC_BTN_PAUSE: {
             if (playback_control::get()->is_playing()) {
                 bool paused = playback_control::get()->is_paused(); playback_control::get()->pause(!paused);
@@ -996,6 +1343,7 @@ LRESULT CALLBACK EditorWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
         case IDM_EDIT_SHIFT_TIME: ShowShiftTimeDialog(); break;
         case IDM_EDIT_REMOVE_ORIG: RemoveOriginalLyrics(); break;
         case IDM_EDIT_REMOVE_TRANS: RemoveTranslationLyrics(); break;
+        case IDM_EDIT_MERGE_DUAL: MergeAllDualLyrics(); break;
         case IDM_FILE_SAVE_TAG: SaveToEmbeddedTag(); break;
         case IDM_FILE_SAVE_AS: SaveAsLrcFile(); break;
         case IDM_FONT_CHANGE: {
@@ -1025,14 +1373,24 @@ LRESULT CALLBACK EditorWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
     case WM_KEYDOWN: {
         if (wParam == VK_ESCAPE) { TryCloseWindow(); return 0; }
         if (wParam == 'S' && (GetKeyState(VK_CONTROL) & 0x8000)) { SaveToLrcFile(); return 0; }
+        if (wParam == 'O' && (GetKeyState(VK_CONTROL) & 0x8000)) { OpenLrcFile(); return 0; }
         if (wParam == VK_ADD && (GetKeyState(VK_CONTROL) & 0x8000)) { g_editorFontSize += 2; if (g_editorFontSize > 72) g_editorFontSize = 72; ApplyNewFont(); return 0; }
         if (wParam == VK_SUBTRACT && (GetKeyState(VK_CONTROL) & 0x8000)) { g_editorFontSize -= 2; if (g_editorFontSize < 8) g_editorFontSize = 8; ApplyNewFont(); return 0; }
         break;
     }
     case WM_CLOSE: TryCloseWindow(); return 0;
     case WM_DESTROY:
-        GetWindowRect(hwnd, &g_windowRect); SaveSettings(); KillTimer(hwnd, 1); KillTimer(hwnd, 2);
+        // 只有正常状态才再取一次坐标；最小化/最大化时沿用最后一次有效值
+        if (!IsIconic(hwnd) && !IsZoomed(hwnd)) {
+            RECT rc;
+            if (GetWindowRect(hwnd, &rc) && rc.right > rc.left && rc.bottom > rc.top) {
+                g_windowRect = rc; g_hasSavedPos = true;
+            }
+        }
+        SanitizeWindowRect();
+        SaveSettings(); KillTimer(hwnd, 1); KillTimer(hwnd, 2);
         if (g_hDarkBrush) { DeleteObject(g_hDarkBrush); g_hDarkBrush = NULL; }
+        if (g_hLightBrush) { g_hLightBrush = NULL; }
         if (g_pEditorHooks) { delete g_pEditorHooks; g_pEditorHooks = nullptr; }
         if (g_hShiftTimeDlg) { DestroyWindow(g_hShiftTimeDlg); g_hShiftTimeDlg = NULL; if (g_pShiftHooks) { delete g_pShiftHooks; g_pShiftHooks = nullptr; } }
         if (g_hFindReplaceDlg) { DestroyWindow(g_hFindReplaceDlg); g_hFindReplaceDlg = NULL; if (g_pFrHooks) { delete g_pFrHooks; g_pFrHooks = nullptr; } }
@@ -1044,20 +1402,32 @@ LRESULT CALLBACK EditorWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
     }
     return DefWindowProc(hwnd, msg, wParam, lParam);
 }
-
 void ShowLyricEditor(HWND hParent) {
-    LoadLibrary(L"msftedit.dll");
     LoadSettings();
-    if (g_hEditorWnd && IsWindow(g_hEditorWnd)) { SetForegroundWindow(g_hEditorWnd); return; }
+    SanitizeWindowRect();  // 双保险：注册表里已存坏坐标也能自动救回来
+    if (g_hEditorWnd && IsWindow(g_hEditorWnd)) {
+        if (IsIconic(g_hEditorWnd)) ShowWindow(g_hEditorWnd, SW_RESTORE);
+        SetForegroundWindow(g_hEditorWnd);
+        return;
+    }
     WNDCLASSW wc = { 0 }; wc.lpfnWndProc = EditorWndProc; wc.hInstance = GetModuleHandle(NULL); wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-    wc.hbrBackground = NULL;
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     wc.lpszClassName = L"MongolLyricEditorClass";
     HWND mainWnd = core_api::get_main_window(); HICON hIcon = (HICON)SendMessage(mainWnd, WM_GETICON, ICON_BIG, 0); if (!hIcon) hIcon = (HICON)GetClassLongPtr(mainWnd, GCLP_HICON); if (!hIcon) hIcon = LoadIcon(NULL, IDI_APPLICATION); wc.hIcon = hIcon; RegisterClassW(&wc);
     int winW = g_windowRect.right - g_windowRect.left, winH = g_windowRect.bottom - g_windowRect.top;
-    if (winW < 800) winW = 900; if (winH < 600) winH = 850;
+    if (winW < 600) winW = 720; if (winH < 500) winH = 680;
     int posX, posY;
     if (!g_hasSavedPos) { RECT wa; SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0); posX = wa.left + (wa.right - wa.left - winW) / 2; posY = wa.top + (wa.bottom - wa.top - winH) / 2; }
     else { posX = g_windowRect.left; posY = g_windowRect.top; }
-    g_hEditorWnd = CreateWindowExW(WS_CLIPCHILDREN, L"MongolLyricEditorClass", L"蒙古文歌词编辑器", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, posX, posY, winW, winH, NULL, NULL, GetModuleHandle(NULL), NULL);
-    if (g_hEditorWnd) { ShowWindow(g_hEditorWnd, SW_SHOW); UpdateWindow(g_hEditorWnd); }
+    g_hEditorWnd = CreateWindowExW(
+        WS_EX_APPWINDOW,
+        L"MongolLyricEditorClass", L"蒙古文歌词编辑器",
+        WS_OVERLAPPEDWINDOW,
+        posX, posY, winW, winH, NULL, NULL, GetModuleHandle(NULL), NULL
+    );
+    if (g_hEditorWnd) {
+        ShowWindow(g_hEditorWnd, SW_SHOWNORMAL);  // 不恢复成最大化/全屏
+        UpdateWindow(g_hEditorWnd);
+        SetForegroundWindow(g_hEditorWnd);        // 防止被全屏的主窗口盖在后面
+    }
 }
